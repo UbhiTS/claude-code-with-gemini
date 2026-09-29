@@ -37,6 +37,21 @@ resource "google_compute_router_nat" "nat" {
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
 }
 
+resource "google_compute_firewall" "allow_rdp" {
+  project = var.project_id
+  name    = "claude-vertex-allow-rdp"
+  network = google_compute_network.vpc.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["3389"]
+  }
+
+  # Open RDP access to the internet for live graphical XFCE4 + tmux + VS Code demos
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["claude-vertex-demo-vm"]
+}
+
 resource "google_compute_firewall" "allow_iap_ssh" {
   project = var.project_id
   name    = "claude-vertex-allow-iap-ssh"

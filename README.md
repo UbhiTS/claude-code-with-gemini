@@ -82,11 +82,31 @@ Below is an actual live telemetry capture from running `./small.sh` (Token-Bucke
 > **Medium Task Enterprise Annual Impact (100 Devs × 15 Tasks/Day = 375,000 Runs/Yr)**:
 > - **Hybrid Vertex AI Spend**: `$102,190/yr` vs `$490,039/yr` on 100% Claude Opus 5.5 (**`$387,849/yr` net savings**, **`-79.1%`**, and **`29,849 developer hours/yr` saved**).
 
+### 4. Live Verified Benchmark Results (`./large.sh` — 5-Module Cloud FinOps Anomaly Platform, 320,360 Tokens & 20 Tool Calls)
+| Stage | Vertex AI Model | API Turns | Tool Calls | Input Tokens | Output Tokens | Token Share | API Time | Actual Cost (USD) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Planner** | `Claude Opus 5.5` | 1 | 0 | 8,524 | 1,396 | 3.1% | 13.85s | `$0.07752` |
+| **Implementer** | **`Gemini 3.8 Flash`** | **21** | **20** | **299,239** | **5,175** | **95.0%** | **110.85s** | **`$0.24384`** *(vs `$1.62557` on Opus)* |
+| **Reviewer** | `Claude Sonnet 5` | 1 | 0 | 5,533 | 493 | 1.9% | 6.71s | `$0.02399` |
+| **TOTAL** | **Hybrid 3-Agent** | **23** | **20** | **313,296** | **7,064** | **100.0%** | **131.41s** | **`$0.34535` (`-80.2%` vs All-Opus `$1.74308`)** |
+
+> **Large Task Enterprise Annual Impact (100 Devs × 15 Tasks/Day = 375,000 Runs/Yr)**:
+> - **Hybrid Vertex AI Spend**: `$129,507/yr` vs `$653,655/yr` on 100% Claude Opus 5.5 (**`$524,148/yr` net savings**, **`-80.2%`**, and **`36,640 developer hours/yr` saved**).
+> - **Scaling Law**: As task complexity grows (`Small` $\rightarrow$ `Medium` $\rightarrow$ `Large`), the `Implementer` coding loop's share of total tokens rises from **`88.5%` $\rightarrow$ `93.9%` $\rightarrow$ `95.0%`**, driving total hybrid savings from **`73.8%` $\rightarrow$ `79.1%` $\rightarrow$ `80.2%`** while retaining Claude Opus 5.5 for architectural planning and Claude Sonnet 5 for QA review.
+
 ---
 
-## One-Line Demo Commands
+## One-Click Remote Desktop (RDP) & Terminal Demo Commands
 
-Once connected to the demo workstation (or inside your local checkout):
+The `click-to-deploy/` Terraform package provisions an **Ubuntu 22.04 LTS GCE Workstation (`e2-standard-4`)** with an External IP, open **RDP (`3389`)** access (`xrdp` + `XFCE4` desktop + `VS Code` + `code-server`), and 5 pre-configured Desktop icons (`1-Small-Demo.desktop` through `5-VSCode-Workspace.desktop`):
+
+```bash
+# Deploy the RDP + SSH Demo Workstation into your GCP Project
+cd click-to-deploy
+./quickstart-deploy.sh <YOUR_GCP_PROJECT_ID> us-central1 us-central1-a
+```
+
+Once connected via **Microsoft Remote Desktop / Remmina (`<EXTERNAL_IP>:3389`, user `demo`)** or IAP SSH:
 
 ```bash
 # 1. Run the Small Benchmark (Token-Bucket Rate Limiter & CLI — ~60-85s)

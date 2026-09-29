@@ -3,7 +3,7 @@
 # Click-to-Deploy Quickstart Orchestrator for Claude Code + Vertex AI Hybrid Demo
 # Follows the 2-phase go/demos Click-to-Deploy pattern:
 #   Phase 1: Apply org_policy overrides & enable required GCP APIs (sleep 45s)
-#   Phase 2: Provision IAM, VPC/NAT, IAP firewall, and pre-warmed GCE VM
+#   Phase 2: Provision IAM, VPC/NAT, RDP (3389) + IAP SSH (22) firewall, and GCE VM
 # ==============================================================================
 set -euo pipefail
 
@@ -31,7 +31,7 @@ popd >/dev/null
 echo "Waiting 45 seconds for Org Policy and API propagation..."
 sleep 45
 
-echo "[Phase 2/2] Provisioning VPC, Cloud NAT, Service Account, and Demo VM..."
+echo "[Phase 2/2] Provisioning VPC, Secret Manager RDP Password, Firewall, and Demo VM..."
 pushd "${SCRIPT_DIR}/demo/terraform" >/dev/null
 terraform init -input=false
 terraform apply -auto-approve \
@@ -41,8 +41,11 @@ terraform apply -auto-approve \
 
 echo ""
 echo "======================================================================"
-echo "  Deployment Complete! Connect to your Demo Workstation via IAP SSH:"
+echo "  Deployment Complete! Connect via RDP (Port 3389) or IAP SSH:"
 echo "======================================================================"
-terraform output -raw ssh_command
-echo ""
+echo "  RDP Connection : $(terraform output -raw rdp_external_ip):3389"
+echo "  RDP Username   : $(terraform output -raw rdp_username)"
+echo "  RDP Password   : $(terraform output -raw rdp_password)"
+echo "  IAP SSH Command: $(terraform output -raw ssh_command)"
+echo "======================================================================"
 popd >/dev/null

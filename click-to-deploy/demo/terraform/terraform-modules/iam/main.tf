@@ -14,6 +14,12 @@ resource "google_project_iam_member" "vertex_user" {
   member  = "serviceAccount:${google_service_account.demo_sa.email}"
 }
 
+resource "google_project_iam_member" "secret_accessor" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.demo_sa.email}"
+}
+
 resource "google_project_iam_member" "log_writer" {
   project = var.project_id
   role    = "roles/logging.logWriter"

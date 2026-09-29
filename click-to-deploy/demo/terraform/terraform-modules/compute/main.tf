@@ -31,7 +31,7 @@ resource "google_compute_instance" "demo_vm" {
 
   boot_disk {
     initialize_params {
-      image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
+      image = "ubuntu-os-cloud/ubuntu-2204-lts"
       size  = 50
       type  = "pd-ssd"
     }
@@ -40,7 +40,10 @@ resource "google_compute_instance" "demo_vm" {
   network_interface {
     network    = var.network_self_link
     subnetwork = var.subnetwork_self_link
-    # Outbound access is handled via Cloud NAT; SSH is handled via IAP TCP forwarding
+
+    access_config {
+      network_tier = "PREMIUM"
+    }
   }
 
   shielded_instance_config {
@@ -58,9 +61,13 @@ resource "google_compute_instance" "demo_vm" {
     enable-oslogin = "FALSE"
   }
 
-  metadata_startup_script = file("${path.module}/../../scripts/vm_startup.sh")
+  metadata_startup_script = file("${path.root}/scripts/vm_startup.sh")
 }
 
 output "vm_name" {
   value = google_compute_instance.demo_vm.name
+}
+
+output "vm_external_ip" {
+  value = google_compute_instance.demo_vm.network_interface[0].access_config[0].nat_ip
 }

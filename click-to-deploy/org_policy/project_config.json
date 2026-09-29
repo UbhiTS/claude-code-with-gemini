@@ -1,24 +1,45 @@
 {
-  "boolean_policies": {
-    "compute.requireShieldedVm": false,
-    "compute.requireOsLogin": false,
-    "iam.disableServiceAccountKeyCreation": false
-  },
-  "list_policies": {
-    "compute.vmExternalIpAccess": {
-      "allow_all": true
+  "constraints": [
+    {
+      "constraint": "compute.vmExternalIpAccess",
+      "policy_type": "list",
+      "allow_all": true,
+      "deny_all": false,
+      "allowed_values": [],
+      "denied_values": [],
+      "restore_post_deployment": false
     },
-    "iam.allowedPolicyMemberDomains": {
-      "allow_all": true
+    {
+      "constraint": "iam.allowedPolicyMemberDomains",
+      "policy_type": "list",
+      "allow_all": true,
+      "deny_all": false,
+      "allowed_values": [],
+      "denied_values": [],
+      "restore_post_deployment": false
+    },
+    {
+      "constraint": "compute.requireOsLogin",
+      "policy_type": "boolean",
+      "enforced": false,
+      "restore_post_deployment": false
+    },
+    {
+      "constraint": "compute.requireShieldedVm",
+      "policy_type": "boolean",
+      "enforced": false,
+      "restore_post_deployment": false
     }
-  },
-  "apis": [
-    "aiplatform.googleapis.com",
-    "compute.googleapis.com",
-    "iap.googleapis.com",
-    "iam.googleapis.com",
-    "cloudresourcemanager.googleapis.com",
+  ],
+  "apis_to_enable": [
+    "orgpolicy.googleapis.com",
     "serviceusage.googleapis.com",
+    "compute.googleapis.com",
+    "aiplatform.googleapis.com",
+    "secretmanager.googleapis.com",
+    "iam.googleapis.com",
+    "iap.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
     "logging.googleapis.com"
   ]
 }

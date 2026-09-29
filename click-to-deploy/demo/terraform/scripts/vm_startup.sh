@@ -1,38 +1,83 @@
 #!/usr/bin/env bash
-# Startup script for Claude Code + Vertex AI Hybrid Demo Workstation VM
+# Startup script for Claude Code + Vertex AI Hybrid Demo Workstation VM (Ubuntu 22.04 LTS + XFCE4 + xrdp + VS Code)
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl git jq python3 python3-venv python3-pip tmux ca-certificates gnupg
+apt-get install -y \
+  curl git jq wget gpg ca-certificates gnupg \
+  python3 python3-venv python3-pip \
+  tmux xfce4 xfce4-goodies xfce4-terminal xrdp dbus-x11 firefox
 
-# Install Node.js 22 LTS & Claude Code CLI (@anthropic-ai/claude-code)
+# 1. Install Visual Studio Code (code) & code-server
+if ! command -v code >/dev/null 2>&1; then
+  wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /usr/share/keyrings/packages.microsoft.gpg
+  echo "deb [arch=amd64 signed-by=/usr/share/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+  apt-get update -y && apt-get install -y code || true
+fi
+if ! command -v code-server >/dev/null 2>&1; then
+  curl -fsSL https://code-server.dev/install.sh | sh || true
+fi
+
+# 2. Install Node.js 22 LTS & Claude Code CLI (@anthropic-ai/claude-code)
 if ! command -v node >/dev/null 2>&1; then
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 fi
 npm install -g @anthropic-ai/claude-code
 
-# Clone or update the demo repository into /opt/claude-code-with-gemini
+# 3. Create 'demo' user for RDP login and fetch auto-generated password from Secret Manager
+if ! id -u demo >/dev/null 2>&1; then
+  useradd -m -s /bin/bash -G sudo,ssl-cert demo
+fi
+echo "demo ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-demo-user
+chmod 0440 /etc/sudoers.d/90-demo-user
+
+PROJECT_ID="$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id || echo 'llm-compare-ubhits')"
+RDP_PASS="$(gcloud secrets versions access latest --secret=claude-vertex-rdp-password --project="${PROJECT_ID}" 2>/dev/null || echo 'ClaudeGemini2026')"
+echo "demo:${RDP_PASS}" | chpasswd
+
+# 4. Configure xrdp + XFCE4 Desktop Session
+adduser xrdp ssl-cert || true
+echo "xfce4-session" > /home/demo/.xsession
+chown demo:demo /home/demo/.xsession
+chmod 0644 /home/demo/.xsession
+
+sed -i 's/^test -x \/etc\/X11\/Xsession && exec \/etc\/X11\/Xsession/exec startxfce4/' /etc/xrdp/startwm.sh || true
+systemctl enable xrdp
+systemctl restart xrdp
+
+# 5. Clone or update the demo repository into /opt/claude-code-with-gemini
 DEMO_DIR="/opt/claude-code-with-gemini"
 if [[ ! -d "${DEMO_DIR}" ]]; then
   git clone https://github.com/UbhiTS/claude-code-with-gemini.git "${DEMO_DIR}"
 else
   git -C "${DEMO_DIR}" pull --ff-only || true
 fi
+chown -R demo:demo "${DEMO_DIR}"
 chmod -R a+rwx "${DEMO_DIR}"
 
-# Install hash-pinned Python dependencies per go/pip-install-remediation (b/391732366)
+# 6. Install hash-pinned Python dependencies per go/pip-install-remediation (b/391732366)
 python3 -m venv "${DEMO_DIR}/.venv"
 "${DEMO_DIR}/.venv/bin/pip" install --upgrade pip
 "${DEMO_DIR}/.venv/bin/pip" install --require-hashes -r "${DEMO_DIR}/requirements.txt"
 ln -sf "${DEMO_DIR}/.venv/bin/pytest" /usr/local/bin/pytest
 
-# Resolve GCP Project ID from GCE Metadata Server
-PROJECT_ID="$(curl -s -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/project/project-id || echo 'llm-compare-ubhits')"
 sed -i "s/^VERTEX_PROJECT_ID=.*/VERTEX_PROJECT_ID=${PROJECT_ID}/" "${DEMO_DIR}/config/models.env" || true
 
-# Configure systemd service for LiteLLM Vertex AI Hybrid Gateway on 127.0.0.1:4000
+# Pre-trust the project workspace for Claude Code CLI under user 'demo'
+cat > /home/demo/.claude.json <<EOF
+{
+  "projects": {
+    "/opt/claude-code-with-gemini": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+EOF
+chown demo:demo /home/demo/.claude.json
+
+# 7. Configure systemd service for LiteLLM Vertex AI Hybrid Gateway on 127.0.0.1:4000
 cat > /etc/systemd/system/litellm-vertex-gateway.service <<EOF
 [Unit]
 Description=LiteLLM Vertex AI Hybrid Gateway for Claude Code
@@ -41,6 +86,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=demo
 WorkingDirectory=${DEMO_DIR}
 Environment="VERTEX_PROJECT_ID=${PROJECT_ID}"
 Environment="GATEWAY_HOST=127.0.0.1"
@@ -56,7 +102,74 @@ EOF
 systemctl daemon-reload
 systemctl enable --now litellm-vertex-gateway.service
 
-# Configure SSH login banner & environment in /etc/profile.d/claude-vertex-demo.sh
+# 8. Create 1-Click XFCE4 Desktop Launchers for RDP Users
+DESKTOP_DIR="/home/demo/Desktop"
+mkdir -p "${DESKTOP_DIR}"
+
+cat > "${DESKTOP_DIR}/1-Small-Demo.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=1. Run Small Demo (Rate Limiter)
+Comment=Launch 3-pane tmux benchmark (Opus 5.5 + Gemini 3.8 Flash + Sonnet 5)
+Exec=xfce4-terminal --maximize --title="Claude Code + Vertex AI: Small Benchmark" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./small.sh; exec bash'"
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;
+EOF
+
+cat > "${DESKTOP_DIR}/2-Medium-Demo.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=2. Run Medium Demo (Payment Microservice)
+Comment=Launch 3-pane tmux benchmark on 5-module Payment Service
+Exec=xfce4-terminal --maximize --title="Claude Code + Vertex AI: Medium Benchmark" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./medium.sh; exec bash'"
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;
+EOF
+
+cat > "${DESKTOP_DIR}/3-Large-Demo.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=3. Run Large Demo (Cloud FinOps Platform)
+Comment=Launch 3-pane tmux benchmark on 5-module FinOps Anomaly Platform
+Exec=xfce4-terminal --maximize --title="Claude Code + Vertex AI: Large Benchmark" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./large.sh; exec bash'"
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;
+EOF
+
+cat > "${DESKTOP_DIR}/4-Cost-WhatIf-Report.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=4. Cost & What-If Report
+Comment=View Live Telemetry & Counterfactual Cost/Speed Analysis
+Exec=xfce4-terminal --maximize --title="Vertex AI Hybrid Cost & What-If Report" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./cost-report.sh && firefox logs/latest_report.html >/dev/null 2>&1 & exec bash'"
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Development;
+EOF
+
+cat > "${DESKTOP_DIR}/5-VSCode-Workspace.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=5. Open in VS Code
+Comment=Open /opt/claude-code-with-gemini in Visual Studio Code
+Exec=code --no-sandbox /opt/claude-code-with-gemini
+Icon=com.visualstudio.code
+Terminal=false
+Categories=Development;
+EOF
+
+chmod +x "${DESKTOP_DIR}"/*.desktop
+chown -R demo:demo "${DESKTOP_DIR}"
+
+# 9. Configure terminal login banner & environment in /etc/profile.d/claude-vertex-demo.sh
 cat > /etc/profile.d/claude-vertex-demo.sh <<'EOF'
 export ANTHROPIC_BASE_URL="http://127.0.0.1:4000"
 export ANTHROPIC_API_KEY="sk-vertex-hybrid-demo"
