@@ -1,0 +1,23 @@
+# Python & Virtualenvs
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets & Environment Overrides
+.env
+.env.local
+*.pem
+*.key
+
+# Ephemeral Run Workspaces (keep logs/telemetry.jsonl sample & latest_report.html)
+workspaces/
+logs/active_context.json
+
+# Terraform runtime state
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars

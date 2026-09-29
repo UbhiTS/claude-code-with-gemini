@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Claude Code + Vertex AI Hybrid Routing Report (medium-20260929-234826)</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: #111827;
+      --border: #1f2937;
+      --text: #f9fafb;
+      --muted: #9ca3af;
+      --accent: #38bdf8;
+      --green: #10b981;
+      --purple: #a855f7;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 2rem;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.65rem; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.95rem; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: 2rem; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.25rem; }
+    .card-label { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .card-val { font-size: 1.8rem; font-weight: 700; margin-top: 0.35rem; color: var(--accent); }
+    .card-val.green { color: var(--green); }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--border); border-radius: 0.75rem; overflow: hidden; margin-bottom: 2rem; }
+    th, td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); text-align: left; font-size: 0.9rem; }
+    th { background: #1e293b; color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.highlight-row { background: rgba(16, 185, 129, 0.12); }
+    .badge { padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }
+    h2 { font-size: 1.15rem; margin: 1.5rem 0 0.75rem; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Claude Code + Vertex AI Hybrid Multi-Agent Cost &amp; Speed Report</h1>
+    <div class="subtitle">
+      Run ID: <strong>medium-20260929-234826</strong> &bull;
+      Task Size: <strong>MEDIUM</strong> &bull;
+      Generated: 2026-09-29T23:50:16.421244+00:00
+    </div>
+
+    <div class="kpi-grid">
+      <div class="card">
+        <div class="card-label">Actual Hybrid Run Cost</div>
+        <div class="card-val">$0.27251</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Savings vs 100% Opus 5.5</div>
+        <div class="card-val green">-79.1%</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Time Saved vs 100% Opus 5.5</div>
+        <div class="card-val green">286.6s (3.75x)</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Annual Enterprise Savings (100 Devs)</div>
+        <div class="card-val green">$387,849/yr</div>
+      </div>
+    </div>
+
+    <h2>1. Live 3-Stage Pipeline Telemetry Breakdown</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th>Vertex AI Model</th>
+          <th class="num">Turns</th>
+          <th class="num">Tools</th>
+          <th class="num">Input Tokens</th>
+          <th class="num">Output Tokens</th>
+          <th class="num">Token Share</th>
+          <th class="num">API Time</th>
+          <th class="num">Cost (USD)</th>
+          <th class="num">Cost Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+            <tr>
+              <td><strong>Planner</strong></td>
+              <td><span class="badge" style="background:#a855f722;color:#a855f7;border:1px solid #a855f755">Claude Opus 5.5</span></td>
+              <td class="num">1</td>
+              <td class="num">0</td>
+              <td class="num">7,901</td>
+              <td class="num">1,253</td>
+              <td class="num">3.9%</td>
+              <td class="num">12.11s</td>
+              <td class="num">$0.07083</td>
+              <td class="num">26.0%</td>
+            </tr>
+            
+            <tr>
+              <td><strong>Implementer</strong></td>
+              <td><span class="badge" style="background:#10b98122;color:#10b981;border:1px solid #10b98155">Gemini 3.8 Flash</span></td>
+              <td class="num">21</td>
+              <td class="num">20</td>
+              <td class="num">217,750</td>
+              <td class="num">4,440</td>
+              <td class="num">93.9%</td>
+              <td class="num">86.61s</td>
+              <td class="num">$0.17996</td>
+              <td class="num">66.0%</td>
+            </tr>
+            
+            <tr>
+              <td><strong>Reviewer</strong></td>
+              <td><span class="badge" style="background:#a855f722;color:#a855f7;border:1px solid #a855f755">Claude Sonnet 5</span></td>
+              <td class="num">1</td>
+              <td class="num">0</td>
+              <td class="num">4,838</td>
+              <td class="num">480</td>
+              <td class="num">2.2%</td>
+              <td class="num">5.51s</td>
+              <td class="num">$0.02171</td>
+              <td class="num">8.0%</td>
+            </tr>
+            
+      </tbody>
+    </table>
+
+    <h2>2. Counterfactual What-If Comparison &amp; Enterprise ROI (375,000 Tasks/Year)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Architecture Scenario</th>
+          <th class="num">Run Cost</th>
+          <th class="num">Savings vs Opus</th>
+          <th class="num">Est. Time</th>
+          <th class="num">Time Saved</th>
+          <th class="num">Annual Spend</th>
+          <th class="num">Annual Savings</th>
+          <th class="num">Dev Hours Saved/Yr</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+            <tr class="highlight-row">
+              <td><strong>Hybrid Vertex AI (Opus 5.5 Plan + Gemini 3.8 Flash Implement + Sonnet 5 Review)</strong></td>
+              <td class="num">$0.27251</td>
+              <td class="num">+79.1%</td>
+              <td class="num">104.23s</td>
+              <td class="num">+286.55s</td>
+              <td class="num">$102,189.75</td>
+              <td class="num">$387,849.00</td>
+              <td class="num">29,849.0 hrs</td>
+            </tr>
+            
+            <tr >
+              <td><strong>100% Claude Opus 5.5 (All 3 Stages on Opus 5.5)</strong></td>
+              <td class="num">$1.30677</td>
+              <td class="num">+0.0%</td>
+              <td class="num">390.78s</td>
+              <td class="num">+0.00s</td>
+              <td class="num">$490,038.75</td>
+              <td class="num">$0.00</td>
+              <td class="num">0.0 hrs</td>
+            </tr>
+            
+            <tr >
+              <td><strong>Anthropic-Only Tiered (Opus 5.5 Plan + Sonnet 5 Implement &amp; Review)</strong></td>
+              <td class="num">$0.81239</td>
+              <td class="num">+37.8%</td>
+              <td class="num">229.74s</td>
+              <td class="num">+161.04s</td>
+              <td class="num">$304,647.75</td>
+              <td class="num">$185,391.00</td>
+              <td class="num">16,775.0 hrs</td>
+            </tr>
+            
+            <tr >
+              <td><strong>100% Claude Sonnet 5 (All 3 Stages on Sonnet 5)</strong></td>
+              <td class="num">$0.78406</td>
+              <td class="num">+40.0%</td>
+              <td class="num">241.76s</td>
+              <td class="num">+149.02s</td>
+              <td class="num">$294,023.25</td>
+              <td class="num">$196,015.50</td>
+              <td class="num">15,522.9 hrs</td>
+            </tr>
+            
+            <tr >
+              <td><strong>100% Gemini 3.8 Flash (Budget Mode)</strong></td>
+              <td class="num">$0.19602</td>
+              <td class="num">+85.0%</td>
+              <td class="num">102.11s</td>
+              <td class="num">+288.67s</td>
+              <td class="num">$73,506.00</td>
+              <td class="num">$416,532.75</td>
+              <td class="num">30,069.8 hrs</td>
+            </tr>
+            
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

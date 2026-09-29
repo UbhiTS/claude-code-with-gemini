@@ -1,0 +1,24 @@
+{
+  "boolean_policies": {
+    "compute.requireShieldedVm": false,
+    "compute.requireOsLogin": false,
+    "iam.disableServiceAccountKeyCreation": false
+  },
+  "list_policies": {
+    "compute.vmExternalIpAccess": {
+      "allow_all": true
+    },
+    "iam.allowedPolicyMemberDomains": {
+      "allow_all": true
+    }
+  },
+  "apis": [
+    "aiplatform.googleapis.com",
+    "compute.googleapis.com",
+    "iap.googleapis.com",
+    "iam.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
+    "serviceusage.googleapis.com",
+    "logging.googleapis.com"
+  ]
+}

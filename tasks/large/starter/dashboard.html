@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cloud FinOps Cost Anomaly Dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; margin: 2rem; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.5rem; padding: 1.25rem; }
+    .val { font-size: 1.75rem; font-weight: 700; color: #38bdf8; }
+  </style>
+</head>
+<body>
+  <h1>Cloud FinOps Cost Anomaly Monitor</h1>
+  <div class="kpi-grid">
+    <div class="card">
+      <div>Total Net Spend (USD)</div>
+      <div class="val" id="total-spend">{{TOTAL_SPEND_USD}}</div>
+    </div>
+    <div class="card">
+      <div>Detected Anomalies</div>
+      <div class="val" id="anomaly-count">{{ANOMALY_COUNT}}</div>
+    </div>
+    <div class="card">
+      <div>Unacknowledged Alerts</div>
+      <div class="val" id="unack-count">{{UNACK_COUNT}}</div>
+    </div>
+  </div>
+</body>
+</html>

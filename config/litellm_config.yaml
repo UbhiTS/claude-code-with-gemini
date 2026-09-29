@@ -1,0 +1,125 @@
+# ============================================================================
+# LiteLLM Proxy Configuration — Claude Code + Gemini 3.8 Flash on Vertex AI
+# ============================================================================
+# Routes Anthropic /v1/messages requests from Claude Code CLI across:
+#   - Planner     : Vertex AI Anthropic Partner Endpoint (claude-opus-5-5)
+#   - Implementer : Vertex AI Google Agent Platform (gemini-3.8-flash)
+#   - Reviewer    : Vertex AI Anthropic Partner Endpoint (claude-sonnet-5)
+#
+# All requests emit structured per-turn token, throughput (tok/s), thinking
+# token, and USD cost telemetry into logs/telemetry.jsonl via
+# src/litellm_vertex_gateway.py.
+# ============================================================================
+
+model_list:
+  # --- 1. Primary 3-Agent Hybrid Demo Models ---
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: vertex_ai/claude-opus-5-5
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+    model_info:
+      id: claude-opus-5-5
+      mode: chat
+      input_cost_per_token: 0.000005
+      output_cost_per_token: 0.000025
+      max_input_tokens: 1000000
+      max_output_tokens: 128000
+
+  - model_name: gemini-3.8-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.8-flash
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+      thinking_level: medium
+    model_info:
+      id: gemini-3.8-flash
+      mode: chat
+      input_cost_per_token: 0.00000075
+      output_cost_per_token: 0.00000375
+      max_input_tokens: 1000000
+      max_output_tokens: 65536
+
+  - model_name: claude-sonnet-5
+    litellm_params:
+      model: vertex_ai/claude-sonnet-5
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+    model_info:
+      id: claude-sonnet-5
+      mode: chat
+      input_cost_per_token: 0.000003
+      output_cost_per_token: 0.000015
+      max_input_tokens: 1000000
+      max_output_tokens: 128000
+
+  # --- 2. Additional Vertex AI Swap Targets (for What-If & Custom Routing) ---
+  - model_name: gemini-3.7-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.7-flash
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+      thinking_level: medium
+    model_info:
+      id: gemini-3.7-flash
+      input_cost_per_token: 0.00000075
+      output_cost_per_token: 0.00000375
+
+  - model_name: gemini-3.5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+    model_info:
+      id: gemini-3.5-flash
+      input_cost_per_token: 0.0000015
+      output_cost_per_token: 0.000009
+
+  - model_name: gemini-3.5-flash-lite
+    litellm_params:
+      model: vertex_ai/gemini-3.5-flash-lite
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+    model_info:
+      id: gemini-3.5-flash-lite
+      input_cost_per_token: 0.0000003
+      output_cost_per_token: 0.0000025
+
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+      thinking_level: high
+    model_info:
+      id: gemini-3.1-pro
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000012
+
+  - model_name: claude-opus-5
+    litellm_params:
+      model: vertex_ai/claude-opus-5
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+    model_info:
+      id: claude-opus-5
+      input_cost_per_token: 0.000005
+      output_cost_per_token: 0.000025
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: vertex_ai/claude-haiku-4-5
+      vertex_project: os.environ/GCP_PROJECT_ID
+      vertex_location: global
+    model_info:
+      id: claude-haiku-4-5
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000005
+
+litellm_settings:
+  drop_params: true
+  modify_params: true
+  callbacks: ["src.litellm_vertex_gateway.proxy_handler_instance"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,22 @@
+demo_id: claude_code_with_gemini
+title: "Claude Code + Gemini 3.8 Flash on Vertex AI: Hybrid Multi-Agent Routing via LiteLLM"
+summary: "Run Claude Code (@anthropic-ai/claude-code) on Google Cloud Vertex AI with a 3-agent LiteLLM router combining Claude Opus 5.5 (Planner), Gemini 3.8 Flash (Implementer), and Claude Sonnet 5 (Reviewer) to cut agentic coding costs by 74% and accelerate execution by 2.6x."
+owners:
+  - ubhi
+categories:
+  - Vertex AI
+  - Generative AI
+  - Application Modernization
+  - Developer Tools
+repository_url: "https://github.com/UbhiTS/claude-code-with-gemini"
+deployment_guide: "DEPLOYMENT.md"
+click_to_deploy:
+  org_policy_dir: "click-to-deploy/org_policy"
+  terraform_dir: "click-to-deploy/demo/terraform"
+  estimated_deploy_minutes: 5
+models_featured:
+  - claude-opus-5-5
+  - gemini-3.8-flash
+  - claude-sonnet-5
+  - gemini-3.7-flash
+  - gemini-3.1-pro
