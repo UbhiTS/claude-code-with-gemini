@@ -908,38 +908,62 @@ def call_vertex_claude(
             vertex_body["thinking"] = {"type": "adaptive", "display": "summarized"}
             vertex_body["output_config"] = {"effort": effort}
 
-        url = (
-            f"https://aiplatform.googleapis.com/v1/projects/{urllib.parse.quote(project_id)}"
-            f"/locations/global/publishers/anthropic/models/{urllib.parse.quote(api_model)}:rawPredict"
-        )
-        t0 = time.perf_counter()
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(vertex_body).encode("utf-8"),
-            headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
-                j = json.loads(resp.read().decode("utf-8"))
-            latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
-            usage = j.get("usage") or {}
-            in_tok = int(usage.get("input_tokens") or 0)
-            out_tok = int(usage.get("output_tokens") or 0)
-            think_tok = int((usage.get("output_tokens_details") or {}).get("thinking_tokens") or 0)
-            blocks = j.get("content") or []
-            # Filter out unsigned thinking blocks so Claude Code CLI tool loops stay clean
-            clean_blocks = [b for b in blocks if isinstance(b, dict) and b.get("type") != "thinking"]
-            if not clean_blocks:
-                clean_blocks = [{"type": "text", "text": ""}]
-            j["content"] = clean_blocks
-            j["model"] = anthropic_req.get("model", model_cfg["id"])
-            tool_calls = sum(1 for b in clean_blocks if b.get("type") == "tool_use")
-            return j, in_tok, out_tok, think_tok, tool_calls, latency_ms
-        except urllib.error.HTTPError as e:
-            if e.code != 401:
+        candidate_projects: List[str] = []
+        for cand in (
+            _TOKEN_CACHE.get("claude_project_id"),
+            os.environ.get("VERTEX_CLAUDE_PROJECT_ID"),
+            "llm-compare-ubhits",
+            project_id,
+        ):
+            c_str = (str(cand) if cand else "").strip()
+            if c_str and c_str != "your-gcp-project-id" and c_str not in candidate_projects:
+                candidate_projects.append(c_str)
+
+        body_bytes = json.dumps(vertex_body).encode("utf-8")
+        last_http_err: Optional[Tuple[int, str]] = None
+        for cand_proj in candidate_projects:
+            url = (
+                f"https://aiplatform.googleapis.com/v1/projects/{urllib.parse.quote(cand_proj)}"
+                f"/locations/global/publishers/anthropic/models/{urllib.parse.quote(api_model)}:rawPredict"
+            )
+            t0 = time.perf_counter()
+            req = urllib.request.Request(
+                url,
+                data=body_bytes,
+                headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    j = json.loads(resp.read().decode("utf-8"))
+                _TOKEN_CACHE["claude_project_id"] = cand_proj
+                latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                usage = j.get("usage") or {}
+                in_tok = int(usage.get("input_tokens") or 0)
+                out_tok = int(usage.get("output_tokens") or 0)
+                think_tok = int((usage.get("output_tokens_details") or {}).get("thinking_tokens") or 0)
+                blocks = j.get("content") or []
+                # Filter out unsigned thinking blocks so Claude Code CLI tool loops stay clean
+                clean_blocks = [b for b in blocks if isinstance(b, dict) and b.get("type") != "thinking"]
+                if not clean_blocks:
+                    clean_blocks = [{"type": "text", "text": ""}]
+                j["content"] = clean_blocks
+                j["model"] = anthropic_req.get("model", model_cfg["id"])
+                tool_calls = sum(1 for b in clean_blocks if b.get("type") == "tool_use")
+                return j, in_tok, out_tok, think_tok, tool_calls, latency_ms
+            except urllib.error.HTTPError as e:
                 err_body = e.read().decode("utf-8", errors="replace")
+                last_http_err = (e.code, err_body)
+                if e.code in (403, 404):
+                    continue
+                if e.code == 401:
+                    break
                 raise RuntimeError(f"Vertex AI Claude HTTP {e.code}: {err_body[:500]}") from e
+
+        if last_http_err and last_http_err[0] != 401:
+            raise RuntimeError(
+                f"Vertex AI Claude HTTP {last_http_err[0]}: {last_http_err[1][:500]}"
+            )
 
     # 2. Argolis Cloud Run Bridge path (executes live on `llm-compare-ubhits` Vertex AI)
     opener = _get_bridge_opener()
