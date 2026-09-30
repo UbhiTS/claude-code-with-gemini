@@ -14,8 +14,27 @@ from src.litellm_vertex_gateway import (
     anthropic_to_gemini_payload,
     format_anthropic_sse_stream,
     gemini_to_anthropic_response,
+    get_vertex_project_id,
 )
 from src.what_if_engine import build_what_if_analysis, render_terminal_report
+
+
+def test_get_vertex_project_id_env_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("USE_GCE_METADATA", "0")
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("VERTEX_PROJECT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+
+    # Fallback when unset
+    assert get_vertex_project_id() == "llm-compare-ubhits"
+
+    # VERTEX_PROJECT_ID set by vm_startup.sh
+    monkeypatch.setenv("VERTEX_PROJECT_ID", "demo-vertex-proj-123")
+    assert get_vertex_project_id() == "demo-vertex-proj-123"
+
+    # GCP_PROJECT_ID takes precedence
+    monkeypatch.setenv("GCP_PROJECT_ID", "custom-gcp-proj-456")
+    assert get_vertex_project_id() == "custom-gcp-proj-456"
 
 
 def test_catalog_pricing_and_gemini_38_rules() -> None:

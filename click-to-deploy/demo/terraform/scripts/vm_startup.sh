@@ -64,6 +64,9 @@ python3 -m venv "${DEMO_DIR}/.venv"
 ln -sf "${DEMO_DIR}/.venv/bin/pytest" /usr/local/bin/pytest
 
 sed -i "s/^VERTEX_PROJECT_ID=.*/VERTEX_PROJECT_ID=${PROJECT_ID}/" "${DEMO_DIR}/config/models.env" || true
+grep -q "^GCP_PROJECT_ID=" "${DEMO_DIR}/config/models.env" \
+  && sed -i "s/^GCP_PROJECT_ID=.*/GCP_PROJECT_ID=${PROJECT_ID}/" "${DEMO_DIR}/config/models.env" \
+  || echo "GCP_PROJECT_ID=${PROJECT_ID}" >> "${DEMO_DIR}/config/models.env"
 
 # Pre-trust the project workspace for Claude Code CLI under user 'demo'
 cat > /home/demo/.claude.json <<EOF
@@ -88,7 +91,9 @@ Wants=network-online.target
 Type=simple
 User=demo
 WorkingDirectory=${DEMO_DIR}
+Environment="GCP_PROJECT_ID=${PROJECT_ID}"
 Environment="VERTEX_PROJECT_ID=${PROJECT_ID}"
+Environment="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
 Environment="GATEWAY_HOST=127.0.0.1"
 Environment="GATEWAY_PORT=4000"
 ExecStart=${DEMO_DIR}/.venv/bin/python3 ${DEMO_DIR}/src/litellm_vertex_gateway.py --host 127.0.0.1 --port 4000

@@ -149,6 +149,41 @@ def record_telemetry(entry: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Credential Acquisition (GCE Metadata -> Env -> gcloud -> Cloud Run Bridge)
 # ---------------------------------------------------------------------------
+def get_vertex_project_id() -> str:
+    """Resolve the active GCP Project ID for Vertex AI calls."""
+    for env_key in ("GCP_PROJECT_ID", "VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT"):
+        val = (os.environ.get(env_key) or "").strip()
+        if val and val != "your-gcp-project-id":
+            return val
+
+    if _TOKEN_CACHE.get("project_id"):
+        return str(_TOKEN_CACHE["project_id"])
+
+    metadata_host = os.environ.get("GCE_METADATA_HOST", "metadata.google.internal")
+    if os.environ.get("USE_GCE_METADATA", "auto") != "0":
+        try:
+            acct_req = urllib.request.Request(
+                f"http://{metadata_host}/computeMetadata/v1/instance/service-accounts/default/email",
+                headers={"Metadata-Flavor": "Google"},
+            )
+            with urllib.request.urlopen(acct_req, timeout=1.0) as r_email:
+                sa_email = r_email.read().decode("utf-8").strip()
+            if "insecure-cloudtop-shared-user" not in sa_email:
+                proj_req = urllib.request.Request(
+                    f"http://{metadata_host}/computeMetadata/v1/project/project-id",
+                    headers={"Metadata-Flavor": "Google"},
+                )
+                with urllib.request.urlopen(proj_req, timeout=1.0) as r_proj:
+                    proj_id = r_proj.read().decode("utf-8").strip()
+                    if proj_id:
+                        _TOKEN_CACHE["project_id"] = proj_id
+                        return proj_id
+        except Exception:
+            pass
+
+    return "llm-compare-ubhits"
+
+
 def get_vertex_oauth_token(force_refresh: bool = False) -> Optional[str]:
     """Acquire a Google Cloud OAuth access token for Vertex AI."""
     now = time.time()
@@ -588,7 +623,7 @@ def call_vertex_gemini(
     body_bytes = json.dumps(gemini_payload).encode("utf-8")
 
     api_key = os.environ.get("AGENT_PLATFORM_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    project_id = os.environ.get("GCP_PROJECT_ID", "llm-compare-ubhits")
+    project_id = get_vertex_project_id()
 
     headers = {"Content-Type": "application/json"}
     if api_key and not api_key.startswith("CONFIGURE_"):
@@ -733,7 +768,7 @@ def call_vertex_claude(
 ) -> Tuple[Dict[str, Any], int, int, int, int, float]:
     """Execute a request on Vertex AI Anthropic (`claude-opus-5-5`, `claude-sonnet-5`)."""
     api_model = model_cfg["api_model"]
-    project_id = os.environ.get("GCP_PROJECT_ID", "llm-compare-ubhits")
+    project_id = get_vertex_project_id()
     supported_efforts = model_cfg.get("supported_efforts", ["low", "medium", "high", "xhigh", "max"])
     default_effort = model_cfg.get("default_effort", "high")
     effort = effort_override or default_effort
@@ -1079,6 +1114,7 @@ class GatewayHTTPRequestHandler(BaseHTTPRequestHandler):
                 {
                     "status": "healthy",
                     "gateway": "litellm-vertex-hybrid-gateway",
+                    "project_id": get_vertex_project_id(),
                     "models": list(MODEL_CATALOG.keys()),
                 },
             )
