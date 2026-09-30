@@ -389,14 +389,16 @@ def invoke_claude_stage_interactive_tui(
         claude_bin,
         "--permission-mode",
         "dontAsk",
+    ]
+    if tools:
+        cmd.extend(["--allowedTools", tools, "--tools", tools])
+    cmd.extend([
         "--agent",
         agent_slug,
         "--model",
         model_id,
-    ]
-    if tools:
-        cmd.extend(["--allowedTools", tools, "--tools", tools])
-    cmd.append(prompt)
+        prompt,
+    ])
 
     stage_start_ts = time.time()
     t0 = time.perf_counter()
