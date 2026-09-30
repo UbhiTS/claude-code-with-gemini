@@ -35,6 +35,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -45,9 +46,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from src.catalog import MODEL_CATALOG, compute_cost_usd, resolve_model
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 LOGS_DIR = REPO_ROOT / "logs"
 TELEMETRY_FILE = LOGS_DIR / "telemetry.jsonl"
 ACTIVE_CONTEXT_FILE = LOGS_DIR / "active_context.json"

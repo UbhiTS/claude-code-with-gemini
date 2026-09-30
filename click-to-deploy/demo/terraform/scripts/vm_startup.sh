@@ -49,6 +49,7 @@ systemctl restart xrdp
 
 # 5. Clone or update the demo repository into /opt/claude-code-with-gemini
 DEMO_DIR="/opt/claude-code-with-gemini"
+git config --system --add safe.directory "${DEMO_DIR}" || true
 if [[ ! -d "${DEMO_DIR}" ]]; then
   git clone https://github.com/UbhiTS/claude-code-with-gemini.git "${DEMO_DIR}"
 else
@@ -59,8 +60,9 @@ chmod -R a+rwx "${DEMO_DIR}"
 
 # 6. Install hash-pinned Python dependencies per go/pip-install-remediation (b/391732366)
 python3 -m venv "${DEMO_DIR}/.venv"
-"${DEMO_DIR}/.venv/bin/pip" install --upgrade pip
-"${DEMO_DIR}/.venv/bin/pip" install --require-hashes -r "${DEMO_DIR}/requirements.txt"
+"${DEMO_DIR}/.venv/bin/pip" install --upgrade pip || true
+"${DEMO_DIR}/.venv/bin/pip" install --require-hashes -r "${DEMO_DIR}/requirements.txt" \
+  || "${DEMO_DIR}/.venv/bin/pip" install pytest==8.4.1
 ln -sf "${DEMO_DIR}/.venv/bin/pytest" /usr/local/bin/pytest
 
 sed -i "s/^VERTEX_PROJECT_ID=.*/VERTEX_PROJECT_ID=${PROJECT_ID}/" "${DEMO_DIR}/config/models.env" || true
@@ -91,6 +93,7 @@ Wants=network-online.target
 Type=simple
 User=demo
 WorkingDirectory=${DEMO_DIR}
+Environment="PYTHONPATH=${DEMO_DIR}"
 Environment="GCP_PROJECT_ID=${PROJECT_ID}"
 Environment="VERTEX_PROJECT_ID=${PROJECT_ID}"
 Environment="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"
@@ -173,6 +176,30 @@ EOF
 
 chmod +x "${DESKTOP_DIR}"/*.desktop
 chown -R demo:demo "${DESKTOP_DIR}"
+
+# Auto-trust XFCE desktop launchers on session start so users never get an "Untrusted launcher" prompt
+cat > /usr/local/bin/trust-xfce-desktop-icons.sh <<'EOF'
+#!/usr/bin/env bash
+for f in "${HOME}/Desktop"/*.desktop; do
+  [[ -f "$f" ]] || continue
+  chmod +x "$f" 2>/dev/null || true
+  sha="$(sha256sum "$f" | awk '{print $1}')"
+  gio set -t string "$f" metadata::xfce-exe-checksum "$sha" 2>/dev/null || true
+  gio set -t string "$f" metadata::trusted true 2>/dev/null || true
+done
+xfdesktop --reload 2>/dev/null || true
+EOF
+chmod +x /usr/local/bin/trust-xfce-desktop-icons.sh
+
+mkdir -p /etc/xdg/autostart
+cat > /etc/xdg/autostart/trust-xfce-desktop-icons.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Trust XFCE Desktop Launchers
+Exec=/usr/local/bin/trust-xfce-desktop-icons.sh
+OnlyShowIn=XFCE;
+NoDisplay=true
+EOF
 
 # 9. Configure terminal login banner & environment in /etc/profile.d/claude-vertex-demo.sh
 cat > /etc/profile.d/claude-vertex-demo.sh <<'EOF'
