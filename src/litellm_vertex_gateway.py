@@ -127,15 +127,27 @@ def write_active_context(
     agent_role: str,
     stage_index: int = 1,
     configured_model: str = "",
+    workspace: str = "",
+    status: str = "running",
+    pytest_summary: str = "",
 ) -> None:
     """Write active pipeline stage metadata to logs/active_context.json."""
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    existing_ws = ""
+    if not workspace and ACTIVE_CONTEXT_FILE.exists():
+        try:
+            existing_ws = str(json.loads(ACTIVE_CONTEXT_FILE.read_text(encoding="utf-8")).get("workspace", ""))
+        except Exception:
+            pass
     payload = {
         "run_id": run_id,
         "task_size": task_size,
         "agent_role": agent_role,
         "stage_index": stage_index,
         "configured_model": configured_model,
+        "workspace": workspace or existing_ws,
+        "status": status,
+        "pytest_summary": pytest_summary,
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     ACTIVE_CONTEXT_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")

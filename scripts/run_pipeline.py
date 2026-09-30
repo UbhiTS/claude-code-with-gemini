@@ -361,6 +361,8 @@ def invoke_claude_stage_interactive_tui(
     prompt: str,
     tools: str,
     timeout_s: int = 240,
+    keep_open: bool = False,
+    on_complete_callback: Optional[Any] = None,
 ) -> Tuple[int, str, float]:
     """Launch the REAL interactive Claude Code TUI (`claude` without `-p`) in a PTY and stream it live."""
     write_active_context(
@@ -369,6 +371,8 @@ def invoke_claude_stage_interactive_tui(
         agent_role=agent_role,
         stage_index=stage_index,
         configured_model=model_id,
+        workspace=str(workspace_dir),
+        status="running",
     )
     ensure_claude_onboarding(workspace_dir)
 
@@ -400,6 +404,10 @@ def invoke_claude_stage_interactive_tui(
         prompt,
     ])
 
+    # Clear terminal screen cleanly so Window 1 displays ONLY pure Claude Code TUI
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
     stage_start_ts = time.time()
     t0 = time.perf_counter()
 
@@ -420,11 +428,22 @@ def invoke_claude_stage_interactive_tui(
     completed_meta: Optional[Dict[str, Any]] = None
     completion_detected_at: Optional[float] = None
     exit_sent_at: Optional[float] = None
+    callback_fired: bool = False
+    stage_elapsed_s: float = 0.0
 
     try:
-        while time.perf_counter() - t0 < timeout_s:
-            rlist, _, _ = select.select([master_fd], [], [], 0.15)
-            if rlist:
+        while True:
+            if not keep_open and (time.perf_counter() - t0) >= timeout_s:
+                break
+            if keep_open and completed_meta is None and (time.perf_counter() - t0) >= timeout_s:
+                break
+
+            watch_fds = [master_fd]
+            if keep_open and callback_fired and sys.stdin.isatty():
+                watch_fds.append(sys.stdin.fileno())
+
+            rlist, _, _ = select.select(watch_fds, [], [], 0.15)
+            if master_fd in rlist:
                 try:
                     chunk = os.read(master_fd, 8192)
                     if not chunk:
@@ -434,6 +453,14 @@ def invoke_claude_stage_interactive_tui(
                 except OSError:
                     break
 
+            if keep_open and callback_fired and sys.stdin.isatty() and sys.stdin.fileno() in rlist:
+                try:
+                    user_in = os.read(sys.stdin.fileno(), 1024)
+                    if user_in:
+                        os.write(master_fd, user_in)
+                except OSError:
+                    pass
+
             if proc.poll() is not None:
                 break
 
@@ -442,13 +469,21 @@ def invoke_claude_stage_interactive_tui(
                 completed_meta = _read_last_stage_completion(stage_start_ts, run_id, agent_role)
                 if completed_meta is not None:
                     completion_detected_at = now
-            elif exit_sent_at is None and completion_detected_at is not None and (now - completion_detected_at) >= 2.2:
+                    stage_elapsed_s = round(time.perf_counter() - t0, 2)
+            elif not callback_fired and completion_detected_at is not None and (now - completion_detected_at) >= 1.2:
+                callback_fired = True
+                if on_complete_callback is not None:
+                    try:
+                        on_complete_callback(completed_meta, stage_elapsed_s)
+                    except Exception:
+                        pass
+            elif not keep_open and exit_sent_at is None and completion_detected_at is not None and (now - completion_detected_at) >= 2.2:
                 exit_sent_at = now
                 try:
                     os.write(master_fd, b"/exit\r")
                 except OSError:
                     pass
-            elif exit_sent_at is not None and (now - exit_sent_at) >= 2.5:
+            elif not keep_open and exit_sent_at is not None and (now - exit_sent_at) >= 2.5:
                 try:
                     os.write(master_fd, b"\x04\x03")
                 except OSError:
@@ -466,7 +501,7 @@ def invoke_claude_stage_interactive_tui(
         except OSError:
             pass
 
-    elapsed_s = round(time.perf_counter() - t0, 2)
+    elapsed_s = stage_elapsed_s or round(time.perf_counter() - t0, 2)
     out_text = ""
     if completed_meta and completed_meta.get("text"):
         out_text = str(completed_meta["text"]).strip()
@@ -486,6 +521,8 @@ def invoke_claude_stage(
     tools: str,
     timeout_s: int = 180,
     interactive_tui: bool = True,
+    keep_open: bool = False,
+    on_complete_callback: Optional[Any] = None,
 ) -> Tuple[int, str, float]:
     """Run a single stage through `claude` CLI (Interactive TUI by default, or `-p` when `--print` is used)."""
     agent_slug_map = {
@@ -507,6 +544,8 @@ def invoke_claude_stage(
             prompt=prompt,
             tools=tools or "Read,Glob,Grep,Write",
             timeout_s=timeout_s,
+            keep_open=keep_open,
+            on_complete_callback=on_complete_callback,
         )
 
     write_active_context(
@@ -515,6 +554,8 @@ def invoke_claude_stage(
         agent_role=agent_role,
         stage_index=stage_index,
         configured_model=model_id,
+        workspace=str(workspace_dir),
+        status="running",
     )
     env = os.environ.copy()
     env.pop("ANTHROPIC_AUTH_TOKEN", None)
@@ -567,8 +608,14 @@ def execute_pipeline(
     reviewer_model: Optional[str] = None,
     gateway_port: int = 4000,
     interactive_tui: bool = True,
+    keep_open: bool = False,
 ) -> int:
-    """Execute the full 3-stage pipeline (`Planner` -> `Implementer` -> `Reviewer`) and print the report."""
+    """Execute the full 3-stage pipeline (`Planner` -> `Implementer` -> `Reviewer`).
+
+    When `interactive_tui=True`, Window 1 displays ONLY pure Claude Code (`claude`)
+    with zero wrapper banners or What-If tables (all telemetry and What-If analysis
+    stream live into Window 2 via `scripts/live_monitor.py`).
+    """
     _load_models_env()
     p_model = resolve_model(planner_model or os.environ.get("PLANNER_MODEL", "claude-opus-5-5"))["id"]
     i_model = resolve_model(implementer_model or os.environ.get("IMPLEMENTER_MODEL", "gemini-3.8-flash"))["id"]
@@ -598,26 +645,28 @@ def execute_pipeline(
     MAGENTA = "\033[95m"
     RESET = "\033[0m"
 
-    print(f"{BOLD}{CYAN}===================================================================================================={RESET}")
-    print(f"{BOLD}{CYAN}  CLAUDE CODE + VERTEX AI HYBRID DEMO — {task_size.upper()} BENCHMARK PIPELINE ({run_id}){RESET}")
-    print(f"{BOLD}{CYAN}===================================================================================================={RESET}")
-    print(f"  Workspace    : {ws_dir}")
-    print(f"  Gateway URL  : http://127.0.0.1:{port} (LiteLLM Vertex AI Hybrid Router)")
-    print(f"  UI Mode      : {'Real Interactive Claude Code TUI (`claude`)' if interactive_tui else 'Headless Print (`claude -p`)'}")
-    print(f"  Stage 1 Plan : {BOLD}{p_cfg['label']}{RESET} ({p_model}) — ${p_cfg['input_price_per_1m']:.2f} / ${p_cfg['output_price_per_1m']:.2f} per 1M")
-    print(f"  Stage 2 Code : {BOLD}{i_cfg['label']}{RESET} ({i_model}) — ${i_cfg['input_price_per_1m']:.2f} / ${i_cfg['output_price_per_1m']:.2f} per 1M")
-    print(f"  Stage 3 QA   : {BOLD}{r_cfg['label']}{RESET} ({r_model}) — ${r_cfg['input_price_per_1m']:.2f} / ${r_cfg['output_price_per_1m']:.2f} per 1M")
-    print(f"{BOLD}{CYAN}----------------------------------------------------------------------------------------------------{RESET}")
-
     pre_code, pre_out = run_pytest(ws_dir)
     last_line_pre = pre_out.splitlines()[-1] if pre_out.splitlines() else "failed"
-    print(f"  [Baseline Pytest Before Pipeline] exit={pre_code} ({last_line_pre})\n", flush=True)
+
+    if not interactive_tui:
+        print(f"{BOLD}{CYAN}===================================================================================================={RESET}")
+        print(f"{BOLD}{CYAN}  CLAUDE CODE + VERTEX AI HYBRID DEMO — {task_size.upper()} BENCHMARK PIPELINE ({run_id}){RESET}")
+        print(f"{BOLD}{CYAN}===================================================================================================={RESET}")
+        print(f"  Workspace    : {ws_dir}")
+        print(f"  Gateway URL  : http://127.0.0.1:{port} (LiteLLM Vertex AI Hybrid Router)")
+        print(f"  UI Mode      : Headless Print (`claude -p`)")
+        print(f"  Stage 1 Plan : {BOLD}{p_cfg['label']}{RESET} ({p_model}) — ${p_cfg['input_price_per_1m']:.2f} / ${p_cfg['output_price_per_1m']:.2f} per 1M")
+        print(f"  Stage 2 Code : {BOLD}{i_cfg['label']}{RESET} ({i_model}) — ${i_cfg['input_price_per_1m']:.2f} / ${i_cfg['output_price_per_1m']:.2f} per 1M")
+        print(f"  Stage 3 QA   : {BOLD}{r_cfg['label']}{RESET} ({r_model}) — ${r_cfg['input_price_per_1m']:.2f} / ${r_cfg['output_price_per_1m']:.2f} per 1M")
+        print(f"{BOLD}{CYAN}----------------------------------------------------------------------------------------------------{RESET}")
+        print(f"  [Baseline Pytest Before Pipeline] exit={pre_code} ({last_line_pre})\n", flush=True)
 
     try:
         # ------------------------------------------------------------------
         # STAGE 1: PLANNER
         # ------------------------------------------------------------------
-        print(f"{BOLD}{MAGENTA}▶ STAGE 1/3: PLANNER ({p_cfg['label']} [`{p_model}`] — Real Claude Code TUI){RESET}", flush=True)
+        if not interactive_tui:
+            print(f"{BOLD}{MAGENTA}▶ STAGE 1/3: PLANNER ({p_cfg['label']} [`{p_model}`]){RESET}", flush=True)
         plan_prompt = build_stage1_planner_prompt(task_size, ws_dir, interactive_tui=interactive_tui)
         s1_code, plan_text, s1_sec = invoke_claude_stage(
             claude_bin=claude_bin,
@@ -643,12 +692,13 @@ def execute_pipeline(
 
         if not interactive_tui:
             print(f"{plan_text}\n")
-        print(f"\n  {GREEN}✓ Stage 1 Planner completed in {s1_sec:.2f}s (saved to PLAN.md){RESET}\n", flush=True)
+            print(f"\n  {GREEN}✓ Stage 1 Planner completed in {s1_sec:.2f}s (saved to PLAN.md){RESET}\n", flush=True)
 
         # ------------------------------------------------------------------
         # STAGE 2: IMPLEMENTER
         # ------------------------------------------------------------------
-        print(f"{BOLD}{GREEN}▶ STAGE 2/3: IMPLEMENTER ({i_cfg['label']} [`{i_model}`] — Real Claude Code TUI){RESET}", flush=True)
+        if not interactive_tui:
+            print(f"{BOLD}{GREEN}▶ STAGE 2/3: IMPLEMENTER ({i_cfg['label']} [`{i_model}`]){RESET}", flush=True)
         impl_prompt = build_stage2_implementer_prompt(task_size, plan_text, interactive_tui=interactive_tui)
         s2_code, impl_text, s2_sec = invoke_claude_stage(
             claude_bin=claude_bin,
@@ -664,17 +714,75 @@ def execute_pipeline(
             timeout_s=240,
             interactive_tui=interactive_tui,
         )
-        if not interactive_tui:
-            print(f"{impl_text}\n")
         post_code, post_out = run_pytest(ws_dir)
         last_line_post = post_out.splitlines()[-1] if post_out.splitlines() else ""
-        print(f"\n  {GREEN}✓ Stage 2 Implementer completed in {s2_sec:.2f}s | Pytest: {last_line_post}{RESET}\n", flush=True)
+        if not interactive_tui:
+            print(f"{impl_text}\n")
+            print(f"\n  {GREEN}✓ Stage 2 Implementer completed in {s2_sec:.2f}s | Pytest: {last_line_post}{RESET}\n", flush=True)
 
         # ------------------------------------------------------------------
         # STAGE 3: REVIEWER
         # ------------------------------------------------------------------
-        print(f"{BOLD}{YELLOW}▶ STAGE 3/3: REVIEWER ({r_cfg['label']} [`{r_model}`] — Real Claude Code TUI){RESET}", flush=True)
+        if not interactive_tui:
+            print(f"{BOLD}{YELLOW}▶ STAGE 3/3: REVIEWER ({r_cfg['label']} [`{r_model}`]){RESET}", flush=True)
         rev_prompt = build_stage3_reviewer_prompt(task_size, ws_dir, post_out, interactive_tui=interactive_tui)
+
+        finalized_state = {"done": False, "post_code": post_code, "last_line_post": last_line_post}
+
+        def _finalize_run(meta: Optional[Dict[str, Any]], s3_elapsed: float) -> None:
+            if finalized_state["done"]:
+                return
+            finalized_state["done"] = True
+            p_code, p_out = run_pytest(ws_dir)
+            p_summary = p_out.splitlines()[-1] if p_out.splitlines() else ""
+            finalized_state["post_code"] = p_code
+            finalized_state["last_line_post"] = p_summary
+
+            review_md_path = ws_dir / "REVIEW.md"
+            qa_review_path = ws_dir / "QA_REVIEW.md"
+            r_txt = str((meta or {}).get("text") or "").strip()
+            if review_md_path.exists() and review_md_path.read_text(encoding="utf-8").strip():
+                r_txt = review_md_path.read_text(encoding="utf-8").strip()
+            elif r_txt:
+                review_md_path.write_text(r_txt + "\n", encoding="utf-8")
+            qa_review_path.write_text((r_txt or "APPROVED FOR PRODUCTION") + "\n", encoding="utf-8")
+
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            run_meta = {
+                "run_id": run_id,
+                "task_size": task_size,
+                "workspace": str(ws_dir),
+                "planner_model": p_model,
+                "implementer_model": i_model,
+                "reviewer_model": r_model,
+                "pytest_passed": p_code == 0,
+                "pytest_summary": p_summary,
+                "stage_seconds": {"Planner": s1_sec, "Implementer": s2_sec, "Reviewer": s3_elapsed},
+                "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            with open(RUNS_FILE, "a", encoding="utf-8") as rf:
+                rf.write(json.dumps(run_meta) + "\n")
+
+            all_rows = load_telemetry()
+            _, _, run_rows = select_run_rows(all_rows, run_id=run_id, task_size=task_size)
+            report = build_what_if_analysis(
+                run_rows=run_rows,
+                all_rows=all_rows,
+                run_id=run_id,
+                task_size=task_size,
+            )
+            write_html_report(report)
+            write_active_context(
+                run_id=run_id,
+                task_size=task_size,
+                agent_role="Completed ✓ (All Tests Passing)" if p_code == 0 else "Completed (Check Tests)",
+                stage_index=3,
+                configured_model=f"{p_model} -> {i_model} -> {r_model}",
+                workspace=str(ws_dir),
+                status="completed",
+                pytest_summary=p_summary,
+            )
+
         s3_code, rev_text, s3_sec = invoke_claude_stage(
             claude_bin=claude_bin,
             gateway_port=port,
@@ -688,48 +796,25 @@ def execute_pipeline(
             tools="Read,Write,Bash,Glob,Grep" if interactive_tui else "",
             timeout_s=180,
             interactive_tui=interactive_tui,
+            keep_open=keep_open,
+            on_complete_callback=_finalize_run,
         )
-        review_md_path = ws_dir / "REVIEW.md"
-        qa_review_path = ws_dir / "QA_REVIEW.md"
-        if review_md_path.exists() and review_md_path.read_text(encoding="utf-8").strip():
-            rev_text = review_md_path.read_text(encoding="utf-8").strip()
-        elif rev_text:
-            review_md_path.write_text(rev_text + "\n", encoding="utf-8")
-        qa_review_path.write_text((rev_text or "APPROVED FOR PRODUCTION") + "\n", encoding="utf-8")
+        _finalize_run({"text": rev_text}, s3_sec)
 
         if not interactive_tui:
             print(f"{rev_text}\n")
-        print(f"\n  {GREEN}✓ Stage 3 Reviewer completed in {s3_sec:.2f}s (saved to REVIEW.md){RESET}\n", flush=True)
+            print(f"\n  {GREEN}✓ Stage 3 Reviewer completed in {s3_sec:.2f}s (saved to REVIEW.md){RESET}\n", flush=True)
+            all_rows = load_telemetry()
+            _, _, run_rows = select_run_rows(all_rows, run_id=run_id, task_size=task_size)
+            report = build_what_if_analysis(
+                run_rows=run_rows,
+                all_rows=all_rows,
+                run_id=run_id,
+                task_size=task_size,
+            )
+            print(render_terminal_report(report), flush=True)
 
-        # Record completed run summary
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        run_meta = {
-            "run_id": run_id,
-            "task_size": task_size,
-            "workspace": str(ws_dir),
-            "planner_model": p_model,
-            "implementer_model": i_model,
-            "reviewer_model": r_model,
-            "pytest_passed": post_code == 0,
-            "pytest_summary": last_line_post,
-            "stage_seconds": {"Planner": s1_sec, "Implementer": s2_sec, "Reviewer": s3_sec},
-            "completed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
-        with open(RUNS_FILE, "a", encoding="utf-8") as rf:
-            rf.write(json.dumps(run_meta) + "\n")
-
-        # Print live Telemetry & Counterfactual What-If Report
-        all_rows = load_telemetry()
-        _, _, run_rows = select_run_rows(all_rows, run_id=run_id, task_size=task_size)
-        report = build_what_if_analysis(
-            run_rows=run_rows,
-            all_rows=all_rows,
-            run_id=run_id,
-            task_size=task_size,
-        )
-        write_html_report(report)
-        print(render_terminal_report(report), flush=True)
-        return 0 if post_code == 0 else 1
+        return 0 if finalized_state["post_code"] == 0 else 1
     finally:
         if owned_server is not None:
             owned_server.shutdown()
@@ -749,6 +834,11 @@ def main() -> int:
         action="store_true",
         help="Use non-interactive `claude -p` print mode instead of the real interactive Claude Code TUI",
     )
+    parser.add_argument(
+        "--keep-open",
+        action="store_true",
+        help="Keep the final Claude Code TUI session open in Window 1 after Stage 3 finishes",
+    )
     args = parser.parse_args()
     return execute_pipeline(
         task_size=args.task,
@@ -757,6 +847,7 @@ def main() -> int:
         reviewer_model=args.reviewer,
         gateway_port=args.port,
         interactive_tui=not args.headless,
+        keep_open=args.keep_open,
     )
 
 

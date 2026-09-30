@@ -119,8 +119,8 @@ cat > "${DESKTOP_DIR}/1-Small-Demo.desktop" <<'EOF'
 Version=1.0
 Type=Application
 Name=1. Run Small Demo (Rate Limiter)
-Comment=Launch 3-pane tmux benchmark (Opus 5.5 + Gemini 3.8 Flash + Sonnet 5)
-Exec=xfce4-terminal --maximize --title="Claude Code + Vertex AI: Small Benchmark" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./small.sh; exec bash'"
+Comment=Launch Pure Claude Code (Left Window) + Live What-If Analyzer (Right Window)
+Exec=/opt/claude-code-with-gemini/small.sh --from-desktop
 Icon=utilities-terminal
 Terminal=false
 Categories=Development;
@@ -131,8 +131,8 @@ cat > "${DESKTOP_DIR}/2-Medium-Demo.desktop" <<'EOF'
 Version=1.0
 Type=Application
 Name=2. Run Medium Demo (Payment Microservice)
-Comment=Launch 3-pane tmux benchmark on 5-module Payment Service
-Exec=xfce4-terminal --maximize --title="Claude Code + Vertex AI: Medium Benchmark" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./medium.sh; exec bash'"
+Comment=Launch Pure Claude Code (Left Window) + Live What-If Analyzer (Right Window)
+Exec=/opt/claude-code-with-gemini/medium.sh --from-desktop
 Icon=utilities-terminal
 Terminal=false
 Categories=Development;
@@ -143,8 +143,8 @@ cat > "${DESKTOP_DIR}/3-Large-Demo.desktop" <<'EOF'
 Version=1.0
 Type=Application
 Name=3. Run Large Demo (Cloud FinOps Platform)
-Comment=Launch 3-pane tmux benchmark on 5-module FinOps Anomaly Platform
-Exec=xfce4-terminal --maximize --title="Claude Code + Vertex AI: Large Benchmark" -e "bash -lc 'cd /opt/claude-code-with-gemini && ./large.sh; exec bash'"
+Comment=Launch Pure Claude Code (Left Window) + Live What-If Analyzer (Right Window)
+Exec=/opt/claude-code-with-gemini/large.sh --from-desktop
 Icon=utilities-terminal
 Terminal=false
 Categories=Development;
