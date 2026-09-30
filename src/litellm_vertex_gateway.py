@@ -436,9 +436,16 @@ def anthropic_to_gemini_payload(
                         tool_id_to_name[tid] = tname
 
     gemini_contents: List[Dict[str, Any]] = []
+    extra_sys_parts: List[str] = []
 
     for m in messages:
-        role = "model" if m.get("role") == "assistant" else "user"
+        raw_role = m.get("role", "user")
+        if raw_role == "system":
+            sys_chunk = extract_anthropic_system(m.get("content"))
+            if sys_chunk:
+                extra_sys_parts.append(sys_chunk)
+            continue
+        role = "model" if raw_role == "assistant" else "user"
         content = m.get("content")
         parts: List[Dict[str, Any]] = []
 
@@ -525,6 +532,14 @@ def anthropic_to_gemini_payload(
         gen_cfg["maxOutputTokens"] = min(max_tok, model_cfg.get("max_output_tokens", 65536))
     if not model_cfg.get("forbid_temperature", True):
         gen_cfg["temperature"] = 0.2
+
+    if extra_sys_parts:
+        system_text = "\n\n".join([p for p in [system_text, *extra_sys_parts] if p])
+
+    if not gemini_contents:
+        gemini_contents.append({"role": "user", "parts": [{"text": "Hello"}]})
+    elif gemini_contents[-1]["role"] == "model":
+        gemini_contents.append({"role": "user", "parts": [{"text": "Continue."}]})
 
     payload: Dict[str, Any] = {
         "contents": gemini_contents,
@@ -669,7 +684,8 @@ def _build_bridge_prompt_with_tools(anthropic_req: Dict[str, Any]) -> Tuple[str,
 
     parts: List[str] = []
     if system_text:
-        parts.append(f"<system_instructions>\n{system_text}\n</system_instructions>")
+        trimmed_sys = system_text[-8000:] if len(system_text) > 8000 else system_text
+        parts.append(f"<system_instructions>\n{trimmed_sys}\n</system_instructions>")
 
     has_tools = bool(tools)
     if has_tools:
@@ -679,7 +695,7 @@ def _build_bridge_prompt_with_tools(anthropic_req: Dict[str, Any]) -> Tuple[str,
                 compact_tools.append(
                     {
                         "name": t["name"],
-                        "description": str(t.get("description", ""))[:400],
+                        "description": str(t.get("description", ""))[:300],
                         "input_schema": t.get("input_schema", {}),
                     }
                 )
@@ -695,6 +711,8 @@ def _build_bridge_prompt_with_tools(anthropic_req: Dict[str, Any]) -> Tuple[str,
 
     for m in messages:
         role = m.get("role", "user")
+        if role == "system":
+            continue
         content = m.get("content", "")
         if isinstance(content, str):
             parts.append(f"<{role}>\n{content}\n</{role}>")
@@ -767,6 +785,72 @@ def _parse_bridge_tool_calls(text: str) -> Tuple[List[Dict[str, Any]], int]:
     return blocks, tool_count
 
 
+def _sanitize_vertex_claude_messages(raw_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Strip internal Claude Code TUI fields (e.g. `role: system`, `output_config`) rejected by Vertex AI."""
+    cleaned: List[Dict[str, Any]] = []
+    for m in raw_messages:
+        if not isinstance(m, dict):
+            continue
+        raw_role = m.get("role", "user")
+        if raw_role == "system":
+            continue
+        role = "assistant" if raw_role == "assistant" else "user"
+        content = m.get("content")
+        clean_blocks: List[Dict[str, Any]] = []
+        if isinstance(content, str):
+            if content:
+                clean_blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                btype = b.get("type")
+                if btype == "text":
+                    txt = str(b.get("text", ""))
+                    if txt:
+                        clean_blocks.append({"type": "text", "text": txt})
+                elif btype == "tool_use":
+                    clean_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": str(b.get("id", f"toolu_{uuid.uuid4().hex[:16]}")),
+                            "name": str(b.get("name", "")),
+                            "input": b.get("input") if isinstance(b.get("input"), dict) else {},
+                        }
+                    )
+                elif btype == "tool_result":
+                    tr_content = b.get("content", "")
+                    if isinstance(tr_content, list):
+                        tr_clean = [
+                            {"type": "text", "text": str(sub.get("text", ""))}
+                            for sub in tr_content
+                            if isinstance(sub, dict) and sub.get("type") == "text"
+                        ]
+                        tr_content = tr_clean if tr_clean else ""
+                    elif not isinstance(tr_content, str):
+                        tr_content = json.dumps(tr_content)
+                    tr_block: Dict[str, Any] = {
+                        "type": "tool_result",
+                        "tool_use_id": str(b.get("tool_use_id", "")),
+                        "content": tr_content,
+                    }
+                    if "is_error" in b:
+                        tr_block["is_error"] = bool(b["is_error"])
+                    clean_blocks.append(tr_block)
+        if not clean_blocks:
+            clean_blocks.append({"type": "text", "text": " "})
+        if cleaned and cleaned[-1]["role"] == role:
+            cleaned[-1]["content"].extend(clean_blocks)
+        else:
+            cleaned.append({"role": role, "content": clean_blocks})
+
+    if not cleaned:
+        cleaned.append({"role": "user", "content": [{"type": "text", "text": "Hello"}]})
+    elif cleaned[-1]["role"] == "assistant":
+        cleaned.append({"role": "user", "content": [{"type": "text", "text": "Continue."}]})
+    return cleaned
+
+
 def call_vertex_claude(
     anthropic_req: Dict[str, Any], model_cfg: Dict[str, Any], effort_override: Optional[str] = None
 ) -> Tuple[Dict[str, Any], int, int, int, int, float]:
@@ -788,14 +872,38 @@ def call_vertex_claude(
                 int(anthropic_req.get("max_tokens") or 16384),
                 model_cfg.get("max_output_tokens", 128000),
             ),
-            "messages": anthropic_req.get("messages", []),
+            "messages": _sanitize_vertex_claude_messages(anthropic_req.get("messages", [])),
         }
-        if anthropic_req.get("system"):
-            vertex_body["system"] = anthropic_req["system"]
-        if anthropic_req.get("tools"):
-            vertex_body["tools"] = anthropic_req["tools"]
-        if anthropic_req.get("tool_choice"):
-            vertex_body["tool_choice"] = anthropic_req["tool_choice"]
+        sys_val = anthropic_req.get("system")
+        if isinstance(sys_val, str) and sys_val.strip():
+            vertex_body["system"] = sys_val
+        elif isinstance(sys_val, list):
+            clean_sys = [
+                {"type": "text", "text": str(b.get("text", ""))}
+                for b in sys_val
+                if isinstance(b, dict) and b.get("text")
+            ]
+            if clean_sys:
+                vertex_body["system"] = clean_sys
+
+        raw_tools = anthropic_req.get("tools")
+        if isinstance(raw_tools, list) and raw_tools:
+            clean_tools = [
+                {
+                    "name": str(t["name"]),
+                    "description": str(t.get("description") or ""),
+                    "input_schema": t["input_schema"],
+                }
+                for t in raw_tools
+                if isinstance(t, dict) and t.get("name") and isinstance(t.get("input_schema"), dict)
+            ]
+            if clean_tools:
+                vertex_body["tools"] = clean_tools
+
+        if anthropic_req.get("tool_choice") and isinstance(anthropic_req.get("tool_choice"), dict):
+            tc_type = anthropic_req["tool_choice"].get("type")
+            if tc_type in ("auto", "any", "tool"):
+                vertex_body["tool_choice"] = anthropic_req["tool_choice"]
         elif model_cfg.get("thinking_type") == "adaptive":
             vertex_body["thinking"] = {"type": "adaptive", "display": "summarized"}
             vertex_body["output_config"] = {"effort": effort}
@@ -902,8 +1010,40 @@ def dispatch_anthropic_messages(
     """Route an Anthropic `/v1/messages` request to Vertex AI (Gemini or Claude) and log telemetry."""
     ctx = get_active_context(headers)
     requested_model = str(anthropic_req.get("model") or "gemini-3.8-flash")
+    sys_text = extract_anthropic_system(anthropic_req.get("system"))
+    has_tools = bool(anthropic_req.get("tools"))
+    max_tok = int(anthropic_req.get("max_tokens") or 16384)
 
-    # Map subagent / role-based model overrides if needed
+    # Detect internal Claude Code TUI helper requests (quota probe, terminal title generator, etc.)
+    is_bg_helper = (
+        max_tok <= 128
+        or (
+            not has_tools
+            and (
+                "isNewTopic" in sys_text
+                or "title" in sys_text.lower()
+                or "summarize" in sys_text.lower()
+                or "haiku" in requested_model.lower()
+            )
+        )
+    )
+
+    agent_role = ctx["agent_role"]
+    if "Stage 1 Principal Architect" in sys_text:
+        agent_role = "Planner"
+        requested_model = os.environ.get("PLANNER_MODEL", requested_model)
+    elif "Stage 2 High-Velocity Implementer" in sys_text:
+        agent_role = "Implementer"
+        requested_model = os.environ.get("IMPLEMENTER_MODEL", requested_model)
+    elif "Stage 3 Staff Security & Quality Reviewer" in sys_text:
+        agent_role = "Reviewer"
+        requested_model = os.environ.get("REVIEWER_MODEL", requested_model)
+
+    if is_bg_helper:
+        model_cfg = resolve_model("gemini-3.8-flash")
+        msg, _, _, _, _, _ = call_vertex_gemini(anthropic_req, model_cfg, "low")
+        return msg
+
     model_cfg = resolve_model(requested_model)
     effort_override = ctx.get("effort")
 
@@ -918,12 +1058,13 @@ def dispatch_anthropic_messages(
 
     tok_per_sec = round((out_tok / (latency_ms / 1000.0)), 1) if latency_ms > 0 else 0.0
     cost_usd = compute_cost_usd(model_cfg["id"], in_tok, out_tok)
+    stop_reason = msg.get("stop_reason", "end_turn")
 
     telemetry_event = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "run_id": ctx["run_id"],
         "task_size": ctx["task_size"],
-        "agent_role": ctx["agent_role"],
+        "agent_role": agent_role,
         "requested_model": requested_model,
         "model": model_cfg["id"],
         "model_label": model_cfg["label"],
@@ -936,10 +1077,36 @@ def dispatch_anthropic_messages(
         "tokens_per_sec": tok_per_sec,
         "cost_usd": cost_usd,
         "tool_calls": tool_calls,
-        "stop_reason": msg.get("stop_reason", "end_turn"),
+        "stop_reason": stop_reason,
         "status": "ok",
     }
     record_telemetry(telemetry_event)
+
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        assistant_text = "\n".join(
+            str(b.get("text", ""))
+            for b in (msg.get("content") or [])
+            if isinstance(b, dict) and b.get("type") == "text" and b.get("text")
+        ).strip()
+        (LOGS_DIR / "last_stage_output.json").write_text(
+            json.dumps(
+                {
+                    "run_id": ctx["run_id"],
+                    "task_size": ctx["task_size"],
+                    "agent_role": agent_role,
+                    "model": model_cfg["id"],
+                    "stop_reason": stop_reason,
+                    "tool_calls": tool_calls,
+                    "text": assistant_text,
+                    "timestamp": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
     return msg
 
 

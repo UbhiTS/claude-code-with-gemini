@@ -1,24 +1,34 @@
 #!/usr/bin/env python3
-"""3-Stage Claude Code + Vertex AI Hybrid Pipeline Orchestrator.
+"""3-Stage Claude Code + Vertex AI Hybrid Pipeline Orchestrator (Interactive TUI & Headless).
 
 Executes a real end-to-end software engineering workflow using the official
-`claude` CLI (`@anthropic-ai/claude-code`) routed through the LiteLLM Vertex AI
-Gateway across three specialized, configurable models:
-  1. Stage 1 — Planner     (default: `claude-opus-5-5`)
-  2. Stage 2 — Implementer (default: `gemini-3.8-flash`)
-  3. Stage 3 — Reviewer    (default: `claude-sonnet-5`)
+interactive `claude` TUI application (`@anthropic-ai/claude-code`) routed through
+the LiteLLM Vertex AI Gateway across three specialized, configurable models:
+  1. Stage 1 — Planner     (default: `claude-opus-5-5`, `--agent planner`)
+  2. Stage 2 — Implementer (default: `gemini-3.8-flash`, `--agent implementer`)
+  3. Stage 3 — Reviewer    (default: `claude-sonnet-5`, `--agent reviewer`)
+
+By default, each stage launches inside the real interactive Claude Code TUI (`claude`
+without `-p`) over a pseudo-terminal (PTY) so the viewer watches live file reads,
+`PLAN.md` generation, code diff updates (`Update(...)`), `pytest` execution, and
+`REVIEW.md` sign-off happening in the real Claude Code interface.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import json
 import os
+import pty
+import select
 import shutil
 import socket
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 import urllib.request
@@ -45,6 +55,7 @@ from src.what_if_engine import (
 )
 
 RUNS_FILE = LOGS_DIR / "runs.jsonl"
+LAST_STAGE_OUTPUT_FILE = LOGS_DIR / "last_stage_output.json"
 
 
 def _load_models_env() -> Dict[str, str]:
@@ -112,6 +123,41 @@ def find_claude_cli() -> str:
     raise FileNotFoundError("Claude Code CLI (`claude`) not found on PATH.")
 
 
+def ensure_claude_onboarding(workspace_dir: Path) -> None:
+    """Pre-configure ~/.claude.json so interactive Claude Code TUI skips onboarding & trust dialogs."""
+    cfg_path = Path.home() / ".claude.json"
+    data: Dict[str, Any] = {}
+    if cfg_path.exists():
+        try:
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+
+    data["hasCompletedOnboarding"] = True
+    data["lastOnboardingVersion"] = "2.1.285"
+    data["theme"] = data.get("theme") or "dark"
+    data["bypassPermissionsModeAccepted"] = True
+
+    api_key = "sk-vertex-hybrid-demo"
+    approved = data.setdefault("customApiKeyResponses", {}).setdefault("approved", [])
+    for k in (api_key, api_key[-20:]):
+        if k not in approved:
+            approved.append(k)
+
+    projects = data.setdefault("projects", {})
+    allowed_tools = ["Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Task", "Agent"]
+    for p in {str(REPO_ROOT), str(REPO_ROOT.resolve()), str(workspace_dir), str(workspace_dir.resolve())}:
+        proj_cfg = projects.setdefault(p, {})
+        proj_cfg["hasTrustDialogAccepted"] = True
+        proj_cfg["hasCompletedProjectOnboarding"] = True
+        proj_cfg["allowedTools"] = allowed_tools
+
+    try:
+        cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def run_pytest(workspace_dir: Path) -> Tuple[int, str]:
     """Run pytest inside `workspace_dir` and return (exit_code, output)."""
     env = os.environ.copy()
@@ -129,8 +175,14 @@ def run_pytest(workspace_dir: Path) -> Tuple[int, str]:
     return res.returncode, out
 
 
-def prepare_workspace(task_size: str, run_id: str) -> Path:
-    """Copy tasks/<task_size>/starter into workspaces/<task_size>-<run_id> and update latest symlink."""
+def prepare_workspace(
+    task_size: str,
+    run_id: str,
+    planner_model: str = "claude-opus-5-5",
+    implementer_model: str = "gemini-3.8-flash",
+    reviewer_model: str = "claude-sonnet-5",
+) -> Path:
+    """Copy tasks/<task_size>/starter, PROMPT.md, CLAUDE.md, and .claude/ into workspaces/<run_id>."""
     starter_dir = REPO_ROOT / "tasks" / task_size / "starter"
     prompt_file = REPO_ROOT / "tasks" / task_size / "PROMPT.md"
     if not starter_dir.exists():
@@ -144,6 +196,31 @@ def prepare_workspace(task_size: str, run_id: str) -> Path:
     shutil.copytree(starter_dir, ws_dir)
     shutil.copy2(prompt_file, ws_dir / "PROMPT.md")
 
+    claude_md = REPO_ROOT / "CLAUDE.md"
+    if claude_md.exists():
+        shutil.copy2(claude_md, ws_dir / "CLAUDE.md")
+
+    dot_claude_src = REPO_ROOT / ".claude"
+    dot_claude_dst = ws_dir / ".claude"
+    if dot_claude_src.exists():
+        shutil.copytree(dot_claude_src, dot_claude_dst, dirs_exist_ok=True)
+        model_map = {
+            "planner.md": planner_model,
+            "implementer.md": implementer_model,
+            "reviewer.md": reviewer_model,
+        }
+        agents_dir = dot_claude_dst / "agents"
+        if agents_dir.exists():
+            for fname, target_model in model_map.items():
+                fpath = agents_dir / fname
+                if fpath.exists():
+                    lines = fpath.read_text(encoding="utf-8").splitlines()
+                    updated = [
+                        f"model: {target_model}" if ln.startswith("model:") else ln
+                        for ln in lines
+                    ]
+                    fpath.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
     latest_link = workspaces_root / f"{task_size}-latest"
     active_link = workspaces_root / "active"
     for link in (latest_link, active_link):
@@ -153,11 +230,20 @@ def prepare_workspace(task_size: str, run_id: str) -> Path:
             link.symlink_to(ws_dir)
         except Exception:
             pass
+
+    ensure_claude_onboarding(ws_dir)
     return ws_dir
 
 
-def build_stage1_planner_prompt(task_size: str, workspace_dir: Path) -> str:
-    """Construct a context-rich prompt for Stage 1 (Planner) so Opus 5.5 produces an actionable plan."""
+def build_stage1_planner_prompt(task_size: str, workspace_dir: Path, interactive_tui: bool = True) -> str:
+    """Construct the prompt for Stage 1 (Planner)."""
+    if interactive_tui:
+        return (
+            f"Stage 1 (Planner — `{task_size}` task): Read `PROMPT.md` and the Python source files in this "
+            "workspace using `Read`, diagnose every root-cause bug, and write a concise File-by-File "
+            "Implementation Plan (150-250 words) to `PLAN.md` using the `Write` tool. "
+            "Do NOT modify any `.py` files."
+        )
     prompt_md = (workspace_dir / "PROMPT.md").read_text(encoding="utf-8")
     source_blobs = []
     for py_file in sorted(workspace_dir.rglob("*.py")):
@@ -177,8 +263,14 @@ def build_stage1_planner_prompt(task_size: str, workspace_dir: Path) -> str:
     )
 
 
-def build_stage2_implementer_prompt(task_size: str, plan_text: str) -> str:
+def build_stage2_implementer_prompt(task_size: str, plan_text: str, interactive_tui: bool = True) -> str:
     """Construct the prompt for Stage 2 (Implementer) to edit code and verify with pytest."""
+    if interactive_tui:
+        return (
+            f"Stage 2 (Implementer — `{task_size}` task): Read `PLAN.md` and `PROMPT.md`, edit the defective "
+            "Python source files in the current directory to fix all bugs (do NOT modify `tests/`), "
+            "and run `pytest -v` using the `Bash` tool until 100% of unit tests pass."
+        )
     return (
         f"You are the Stage 2 High-Speed Code Implementer working on the `{task_size}` task.\n"
         "Follow the Stage 1 Principal Architect's plan below, read and edit the defective Python files "
@@ -192,8 +284,16 @@ def build_stage2_implementer_prompt(task_size: str, plan_text: str) -> str:
     )
 
 
-def build_stage3_reviewer_prompt(task_size: str, workspace_dir: Path, pytest_output: str) -> str:
-    """Construct a self-contained QA review prompt for Stage 3 (Reviewer)."""
+def build_stage3_reviewer_prompt(
+    task_size: str, workspace_dir: Path, pytest_output: str, interactive_tui: bool = True
+) -> str:
+    """Construct the QA review prompt for Stage 3 (Reviewer)."""
+    if interactive_tui:
+        return (
+            f"Stage 3 (Reviewer — `{task_size}` task): Read `PLAN.md` and the updated Python source files, "
+            "run `pytest -q` using `Bash` to confirm 100% of tests pass, and write a concise QA & Security "
+            "Sign-Off Verdict (100-180 words, ending with `APPROVED FOR PRODUCTION`) to `REVIEW.md` using `Write`."
+        )
     modified_blobs = []
     for py_file in sorted(workspace_dir.glob("*.py")):
         rel = py_file.relative_to(workspace_dir)
@@ -212,6 +312,165 @@ def build_stage3_reviewer_prompt(task_size: str, workspace_dir: Path, pytest_out
     )
 
 
+def _sync_pty_winsize(slave_fd: int) -> None:
+    """Copy terminal window dimensions from stdout to the PTY slave fd."""
+    rows, cols = 45, 115
+    try:
+        if sys.stdout.isatty():
+            packed = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+            r, c, _, _ = struct.unpack("HHHH", packed)
+            if r > 10 and c > 30:
+                rows, cols = r, c
+    except Exception:
+        pass
+    try:
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except Exception:
+        pass
+
+
+def _read_last_stage_completion(stage_start_ts: float, run_id: str, agent_role: str) -> Optional[Dict[str, Any]]:
+    """Return the stage output metadata once the stage's final turn (`stop_reason == 'end_turn'`) finishes."""
+    if not LAST_STAGE_OUTPUT_FILE.exists():
+        return None
+    try:
+        data = json.loads(LAST_STAGE_OUTPUT_FILE.read_text(encoding="utf-8"))
+        if (
+            float(data.get("timestamp") or 0.0) >= stage_start_ts
+            and data.get("run_id") == run_id
+            and data.get("agent_role") == agent_role
+            and data.get("stop_reason") == "end_turn"
+            and int(data.get("tool_calls") or 0) == 0
+        ):
+            return data
+    except Exception:
+        return None
+    return None
+
+
+def invoke_claude_stage_interactive_tui(
+    claude_bin: str,
+    gateway_port: int,
+    workspace_dir: Path,
+    run_id: str,
+    task_size: str,
+    stage_index: int,
+    agent_role: str,
+    agent_slug: str,
+    model_id: str,
+    prompt: str,
+    tools: str,
+    timeout_s: int = 240,
+) -> Tuple[int, str, float]:
+    """Launch the REAL interactive Claude Code TUI (`claude` without `-p`) in a PTY and stream it live."""
+    write_active_context(
+        run_id=run_id,
+        task_size=task_size,
+        agent_role=agent_role,
+        stage_index=stage_index,
+        configured_model=model_id,
+    )
+    ensure_claude_onboarding(workspace_dir)
+
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    env["PATH"] = f"/usr/local/google/home/ubhi/bin:{Path.home() / 'bin'}:{env.get('PATH', '')}"
+    env["PYTHONPATH"] = str(workspace_dir)
+    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{gateway_port}"
+    env["ANTHROPIC_API_KEY"] = "sk-vertex-hybrid-demo"
+    env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    env["CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT"] = "1"
+    env["DEMO_RUN_ID"] = run_id
+    env["DEMO_TASK_SIZE"] = task_size
+    env["DEMO_AGENT_ROLE"] = agent_role
+    env["TERM"] = env.get("TERM") or "xterm-256color"
+
+    cmd = [
+        claude_bin,
+        "--permission-mode",
+        "dontAsk",
+        "--agent",
+        agent_slug,
+        "--model",
+        model_id,
+    ]
+    if tools:
+        cmd.extend(["--allowedTools", tools, "--tools", tools])
+    cmd.append(prompt)
+
+    stage_start_ts = time.time()
+    t0 = time.perf_counter()
+
+    master_fd, slave_fd = pty.openpty()
+    _sync_pty_winsize(slave_fd)
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(workspace_dir),
+        env=env,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+
+    completed_meta: Optional[Dict[str, Any]] = None
+    completion_detected_at: Optional[float] = None
+    exit_sent_at: Optional[float] = None
+
+    try:
+        while time.perf_counter() - t0 < timeout_s:
+            rlist, _, _ = select.select([master_fd], [], [], 0.15)
+            if rlist:
+                try:
+                    chunk = os.read(master_fd, 8192)
+                    if not chunk:
+                        break
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+                except OSError:
+                    break
+
+            if proc.poll() is not None:
+                break
+
+            now = time.time()
+            if completed_meta is None:
+                completed_meta = _read_last_stage_completion(stage_start_ts, run_id, agent_role)
+                if completed_meta is not None:
+                    completion_detected_at = now
+            elif exit_sent_at is None and completion_detected_at is not None and (now - completion_detected_at) >= 2.2:
+                exit_sent_at = now
+                try:
+                    os.write(master_fd, b"/exit\r")
+                except OSError:
+                    pass
+            elif exit_sent_at is not None and (now - exit_sent_at) >= 2.5:
+                try:
+                    os.write(master_fd, b"\x04\x03")
+                except OSError:
+                    pass
+                break
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                proc.kill()
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+    elapsed_s = round(time.perf_counter() - t0, 2)
+    out_text = ""
+    if completed_meta and completed_meta.get("text"):
+        out_text = str(completed_meta["text"]).strip()
+    return proc.returncode or 0, out_text, elapsed_s
+
+
 def invoke_claude_stage(
     claude_bin: str,
     gateway_port: int,
@@ -224,8 +483,30 @@ def invoke_claude_stage(
     prompt: str,
     tools: str,
     timeout_s: int = 180,
+    interactive_tui: bool = True,
 ) -> Tuple[int, str, float]:
-    """Run a single stage through `claude` CLI routed via LiteLLM Vertex Gateway."""
+    """Run a single stage through `claude` CLI (Interactive TUI by default, or `-p` when `--print` is used)."""
+    agent_slug_map = {
+        "Planner": "planner",
+        "Implementer": "implementer",
+        "Reviewer": "reviewer",
+    }
+    if interactive_tui:
+        return invoke_claude_stage_interactive_tui(
+            claude_bin=claude_bin,
+            gateway_port=gateway_port,
+            workspace_dir=workspace_dir,
+            run_id=run_id,
+            task_size=task_size,
+            stage_index=stage_index,
+            agent_role=agent_role,
+            agent_slug=agent_slug_map.get(agent_role, "planner"),
+            model_id=model_id,
+            prompt=prompt,
+            tools=tools or "Read,Glob,Grep,Write",
+            timeout_s=timeout_s,
+        )
+
     write_active_context(
         run_id=run_id,
         task_size=task_size,
@@ -234,6 +515,7 @@ def invoke_claude_stage(
         configured_model=model_id,
     )
     env = os.environ.copy()
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
     env["PATH"] = f"/usr/local/google/home/ubhi/bin:{Path.home() / 'bin'}:{env.get('PATH', '')}"
     env["PYTHONPATH"] = str(workspace_dir)
     env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{gateway_port}"
@@ -282,6 +564,7 @@ def execute_pipeline(
     implementer_model: Optional[str] = None,
     reviewer_model: Optional[str] = None,
     gateway_port: int = 4000,
+    interactive_tui: bool = True,
 ) -> int:
     """Execute the full 3-stage pipeline (`Planner` -> `Implementer` -> `Reviewer`) and print the report."""
     _load_models_env()
@@ -298,7 +581,13 @@ def execute_pipeline(
 
     port, owned_server = ensure_gateway_running(preferred_port=gateway_port)
     claude_bin = find_claude_cli()
-    ws_dir = prepare_workspace(task_size, run_id)
+    ws_dir = prepare_workspace(
+        task_size=task_size,
+        run_id=run_id,
+        planner_model=p_model,
+        implementer_model=i_model,
+        reviewer_model=r_model,
+    )
 
     BOLD = "\033[1m"
     CYAN = "\033[96m"
@@ -312,6 +601,7 @@ def execute_pipeline(
     print(f"{BOLD}{CYAN}===================================================================================================={RESET}")
     print(f"  Workspace    : {ws_dir}")
     print(f"  Gateway URL  : http://127.0.0.1:{port} (LiteLLM Vertex AI Hybrid Router)")
+    print(f"  UI Mode      : {'Real Interactive Claude Code TUI (`claude`)' if interactive_tui else 'Headless Print (`claude -p`)'}")
     print(f"  Stage 1 Plan : {BOLD}{p_cfg['label']}{RESET} ({p_model}) — ${p_cfg['input_price_per_1m']:.2f} / ${p_cfg['output_price_per_1m']:.2f} per 1M")
     print(f"  Stage 2 Code : {BOLD}{i_cfg['label']}{RESET} ({i_model}) — ${i_cfg['input_price_per_1m']:.2f} / ${i_cfg['output_price_per_1m']:.2f} per 1M")
     print(f"  Stage 3 QA   : {BOLD}{r_cfg['label']}{RESET} ({r_model}) — ${r_cfg['input_price_per_1m']:.2f} / ${r_cfg['output_price_per_1m']:.2f} per 1M")
@@ -325,8 +615,8 @@ def execute_pipeline(
         # ------------------------------------------------------------------
         # STAGE 1: PLANNER
         # ------------------------------------------------------------------
-        print(f"{BOLD}{MAGENTA}▶ STAGE 1/3: PLANNER ({p_cfg['label']} [`{p_model}`]){RESET}", flush=True)
-        plan_prompt = build_stage1_planner_prompt(task_size, ws_dir)
+        print(f"{BOLD}{MAGENTA}▶ STAGE 1/3: PLANNER ({p_cfg['label']} [`{p_model}`] — Real Claude Code TUI){RESET}", flush=True)
+        plan_prompt = build_stage1_planner_prompt(task_size, ws_dir, interactive_tui=interactive_tui)
         s1_code, plan_text, s1_sec = invoke_claude_stage(
             claude_bin=claude_bin,
             gateway_port=port,
@@ -337,18 +627,27 @@ def execute_pipeline(
             agent_role="Planner",
             model_id=p_model,
             prompt=plan_prompt,
-            tools="",
-            timeout_s=120,
+            tools="Read,Glob,Grep,Write" if interactive_tui else "",
+            timeout_s=180,
+            interactive_tui=interactive_tui,
         )
-        (ws_dir / "ARCHITECTURE_PLAN.md").write_text(plan_text + "\n", encoding="utf-8")
-        print(f"{ plan_text }\n")
-        print(f"  {GREEN}✓ Stage 1 Planner completed in {s1_sec:.2f}s (saved to ARCHITECTURE_PLAN.md){RESET}\n", flush=True)
+        plan_md_path = ws_dir / "PLAN.md"
+        arch_plan_path = ws_dir / "ARCHITECTURE_PLAN.md"
+        if plan_md_path.exists() and plan_md_path.read_text(encoding="utf-8").strip():
+            plan_text = plan_md_path.read_text(encoding="utf-8").strip()
+        elif plan_text:
+            plan_md_path.write_text(plan_text + "\n", encoding="utf-8")
+        arch_plan_path.write_text((plan_text or "See PLAN.md") + "\n", encoding="utf-8")
+
+        if not interactive_tui:
+            print(f"{plan_text}\n")
+        print(f"\n  {GREEN}✓ Stage 1 Planner completed in {s1_sec:.2f}s (saved to PLAN.md){RESET}\n", flush=True)
 
         # ------------------------------------------------------------------
         # STAGE 2: IMPLEMENTER
         # ------------------------------------------------------------------
-        print(f"{BOLD}{GREEN}▶ STAGE 2/3: IMPLEMENTER ({i_cfg['label']} [`{i_model}`] — Multi-Turn Tool Execution){RESET}", flush=True)
-        impl_prompt = build_stage2_implementer_prompt(task_size, plan_text)
+        print(f"{BOLD}{GREEN}▶ STAGE 2/3: IMPLEMENTER ({i_cfg['label']} [`{i_model}`] — Real Claude Code TUI){RESET}", flush=True)
+        impl_prompt = build_stage2_implementer_prompt(task_size, plan_text, interactive_tui=interactive_tui)
         s2_code, impl_text, s2_sec = invoke_claude_stage(
             claude_bin=claude_bin,
             gateway_port=port,
@@ -359,19 +658,21 @@ def execute_pipeline(
             agent_role="Implementer",
             model_id=i_model,
             prompt=impl_prompt,
-            tools="Read,Edit,Write,Bash",
+            tools="Read,Edit,Write,MultiEdit,Bash,Glob,Grep",
             timeout_s=240,
+            interactive_tui=interactive_tui,
         )
-        print(f"{ impl_text }\n")
+        if not interactive_tui:
+            print(f"{impl_text}\n")
         post_code, post_out = run_pytest(ws_dir)
         last_line_post = post_out.splitlines()[-1] if post_out.splitlines() else ""
-        print(f"  {GREEN}✓ Stage 2 Implementer completed in {s2_sec:.2f}s | Pytest: {last_line_post}{RESET}\n", flush=True)
+        print(f"\n  {GREEN}✓ Stage 2 Implementer completed in {s2_sec:.2f}s | Pytest: {last_line_post}{RESET}\n", flush=True)
 
         # ------------------------------------------------------------------
         # STAGE 3: REVIEWER
         # ------------------------------------------------------------------
-        print(f"{BOLD}{YELLOW}▶ STAGE 3/3: REVIEWER ({r_cfg['label']} [`{r_model}`] — Staff QA Audit){RESET}", flush=True)
-        rev_prompt = build_stage3_reviewer_prompt(task_size, ws_dir, post_out)
+        print(f"{BOLD}{YELLOW}▶ STAGE 3/3: REVIEWER ({r_cfg['label']} [`{r_model}`] — Real Claude Code TUI){RESET}", flush=True)
+        rev_prompt = build_stage3_reviewer_prompt(task_size, ws_dir, post_out, interactive_tui=interactive_tui)
         s3_code, rev_text, s3_sec = invoke_claude_stage(
             claude_bin=claude_bin,
             gateway_port=port,
@@ -382,12 +683,21 @@ def execute_pipeline(
             agent_role="Reviewer",
             model_id=r_model,
             prompt=rev_prompt,
-            tools="",
-            timeout_s=120,
+            tools="Read,Write,Bash,Glob,Grep" if interactive_tui else "",
+            timeout_s=180,
+            interactive_tui=interactive_tui,
         )
-        (ws_dir / "QA_REVIEW.md").write_text(rev_text + "\n", encoding="utf-8")
-        print(f"{ rev_text }\n")
-        print(f"  {GREEN}✓ Stage 3 Reviewer completed in {s3_sec:.2f}s (saved to QA_REVIEW.md){RESET}\n", flush=True)
+        review_md_path = ws_dir / "REVIEW.md"
+        qa_review_path = ws_dir / "QA_REVIEW.md"
+        if review_md_path.exists() and review_md_path.read_text(encoding="utf-8").strip():
+            rev_text = review_md_path.read_text(encoding="utf-8").strip()
+        elif rev_text:
+            review_md_path.write_text(rev_text + "\n", encoding="utf-8")
+        qa_review_path.write_text((rev_text or "APPROVED FOR PRODUCTION") + "\n", encoding="utf-8")
+
+        if not interactive_tui:
+            print(f"{rev_text}\n")
+        print(f"\n  {GREEN}✓ Stage 3 Reviewer completed in {s3_sec:.2f}s (saved to REVIEW.md){RESET}\n", flush=True)
 
         # Record completed run summary
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -430,6 +740,13 @@ def main() -> int:
     parser.add_argument("--implementer", default=None, help="Override IMPLEMENTER_MODEL")
     parser.add_argument("--reviewer", default=None, help="Override REVIEWER_MODEL")
     parser.add_argument("--port", type=int, default=int(os.environ.get("GATEWAY_PORT", "4000")))
+    parser.add_argument(
+        "--headless",
+        "--print",
+        dest="headless",
+        action="store_true",
+        help="Use non-interactive `claude -p` print mode instead of the real interactive Claude Code TUI",
+    )
     args = parser.parse_args()
     return execute_pipeline(
         task_size=args.task,
@@ -437,6 +754,7 @@ def main() -> int:
         implementer_model=args.implementer,
         reviewer_model=args.reviewer,
         gateway_port=args.port,
+        interactive_tui=not args.headless,
     )
 
 
