@@ -40,6 +40,7 @@ EMPIRICAL_SPEED_TOK_PER_SEC: Dict[str, float] = {
     "gemini-3.5-flash": 175.0,
     "gemini-3.5-flash-lite": 240.0,
     "gemini-3.1-pro": 72.0,
+    "gemini-4-argon": 60.0,
 }
 
 STAGE_ORDER = ["Planner", "Implementer", "Reviewer"]

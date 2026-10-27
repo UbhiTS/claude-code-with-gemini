@@ -65,6 +65,21 @@ MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
         "forbid_temperature": False,
         "fallback_tok_per_sec": 185.0,
     },
+    "gemini-4-argon": {
+        "id": "gemini-4-argon",
+        "label": "Gemini 4 Argon",
+        "publisher": "google",
+        "api_model": "gemini-4-argon",
+        "input_price_per_1m": 2.00,
+        "output_price_per_1m": 10.00,
+        "context_window": 1_000_000,
+        "max_output_tokens": 65_536,
+        # Gemini 4 Argon (frontier reasoning) supports low | medium | high; rejects custom temperature
+        "supported_efforts": ["low", "medium", "high"],
+        "default_effort": "high",
+        "forbid_temperature": True,
+        "fallback_tok_per_sec": 60.0,
+    },
     "gemini-3.1-pro": {
         "id": "gemini-3.1-pro",
         "label": "Gemini 3.1 Pro",
